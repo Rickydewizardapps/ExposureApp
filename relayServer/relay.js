@@ -12,6 +12,30 @@ let tunnelClient = null;
 const tcpServer = net.createServer((socket) =>{
   tunnelClient = socket;
   
+  let buffer = '';
+  
+  socket.on('data', (chunk)=>{
+    
+    buffer += chunk.toString();
+    
+    const messages = buffer.split('\n');
+    buffer = messages.pop();
+    
+    for (const message of messages) {
+      if (!message) return;
+      
+      const response = JSON.parse(message);
+      
+      const res = pendingRequest[response.id];
+      if (!res) return;
+      
+      res.writeHead(response.statusCode, response.headers);
+      res.end(response.body);
+      
+      delete pendingRequest[response.id];
+    }
+  });
+  
   console.log('TCP server connected successfully');
 });
 
@@ -52,7 +76,7 @@ const httpServer = http.createServer((req, res) => {
       method: req.method,
       url: req.url,
       headers: req.headers,
-      body: req.fullBody
+      body: fullBody
     }) + '\n' );
     
     console.log('pending requests: ', Object.keys(pendingRequest));
