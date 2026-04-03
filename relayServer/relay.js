@@ -1,5 +1,6 @@
 import net from 'net';
-import http from 'http';
+import https from 'https';
+import fs from 'fs';
 import crypto from 'crypto';
 
 // global vars
@@ -57,7 +58,12 @@ tcpServer.listen(9000, () => {
 });
 
 // HTTP SERVER
-const httpServer = http.createServer((req, res) => {
+
+const sslOptions = {
+  key: fs.readFileSync('./key.pem'),
+  cert: fs.readFileSync('./cert.pem'),
+};
+const httpsServer = https.createServer(sslOptions, (req, res) => {
   const body = [];
 
   req.on('data', (chunk) => {
@@ -96,6 +102,6 @@ const httpServer = http.createServer((req, res) => {
   });
 });
 
-httpServer.listen(2000, () => {
+httpsServer.listen(2000, () => {
   console.log('HTTP server listening on port 2000');
 });
