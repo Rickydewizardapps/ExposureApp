@@ -7,10 +7,9 @@ import crypto from 'crypto';
 const pendingRequest = {};
 
 // TCP SERVER
-let tunnelClient = null;
+let clients = {};
 
 const tcpServer = net.createServer((socket) => {
-  tunnelClient = socket;
 
   let buffer = '';
 
@@ -21,11 +20,52 @@ const tcpServer = net.createServer((socket) => {
     buffer = messages.pop();
 
     for (const message of messages) {
+      
       if (!message) continue;
 
       try {
         const response = JSON.parse(message);
-
+        
+        // register new domain
+        if (response.type === 'register') {
+          
+          // authentiation
+          if (!response.token) {
+            socket.write(JSON.stringify({
+              type: 'error',
+              message: 'You are not authenticated. Visit our official page for auth token. \n Visit https://apextunnel.online/register'
+            }) + '\n');
+            socket.end();
+            return;
+          }
+          
+          if (response.token !== process.env.APEX_AUTH_TOKEN) {
+            socket.write(JSON.stringify({
+              type: 'error',
+              message: 'Invalid token'
+            }) + '\n');
+            socket.end();
+            return;
+          }
+          const subdomain = response.subdomain ||crypto.randomBytes(4).toString('hex');
+          
+          if (clients[subdomain]) {
+            socket.write(JSON.stringify({
+              type: 'error',
+              message: `Subdomain ${subdomain} is already taken`
+            }) + '\n');
+            socket.end();
+            return;
+          }
+          clients[subdomain] = socket;
+          
+          socket.write(JSON.stringify({
+            type: 'registered',
+            subdomain: subdomain
+          }) + '\n');
+          
+        } else {
+        
         const res = pendingRequest[response.id];
         if (!res) continue;
 
@@ -33,6 +73,7 @@ const tcpServer = net.createServer((socket) => {
         res.end(response.body);
 
         delete pendingRequest[response.id];
+      }
 
       } catch (err) {
         console.log('Malformed json from client:', err.message);
@@ -41,12 +82,16 @@ const tcpServer = net.createServer((socket) => {
   });
 
   socket.on('end', () => {
-    tunnelClient = null;
+    const subdomain = Object.keys(clients).find(key => clients[key] === socket);
+    if (subdomain) delete clients[subdomain];
+    
     console.log('Tunnel client disconnected');
   });
 
   socket.on('error', (err) => {
-    tunnelClient = null;
+    const subdomain = Object.keys(clients).find(key=> clients[key] === socket);
+    if(subdomain) delete clients[subdomain];
+    
     console.log('Tunnel client error:', err.message);
   });
 
@@ -63,6 +108,7 @@ const sslOptions = {
   key: fs.readFileSync('./key.pem'),
   cert: fs.readFileSync('./cert.pem'),
 };
+
 const httpsServer = https.createServer(sslOptions, (req, res) => {
   const body = [];
 
@@ -83,13 +129,17 @@ const httpsServer = https.createServer(sslOptions, (req, res) => {
       delete pendingRequest[requestId];
     });
 
-    if (!tunnelClient) {
-      res.writeHead(500);
-      res.end('No tunnel client connected');
+    const host = req.headers.host || '';
+    const subdomain = host.split('.')[0];
+    const tunnelSocket = clients[subdomain];
+    
+    if (!tunnelSocket) {
+      res.writeHead(404);
+      res.end('No tunnel found for this subdomain');
       return;
     }
-
-    tunnelClient.write(JSON.stringify({
+    
+    tunnelSocket.write(JSON.stringify({
       id: requestId,
       method: req.method,
       url: req.url,

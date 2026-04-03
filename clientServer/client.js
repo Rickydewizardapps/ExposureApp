@@ -5,7 +5,9 @@ import { parseArgs } from 'util';
 const { values } = parseArgs({
   options: {
     relay: { type: 'string', default: 'localhost' },
-    port: { type: 'string', default: '8000' }
+    port: { type: 'string', default: '8000' },
+    subdomain: { type: 'string', default: ''},
+    token: { type: 'string', default: '' },
   }
 });
 
@@ -14,7 +16,14 @@ let buffer = '';
 function connect() {
   const tunnel = net.connect(9000, values.relay, () => {
   console.log('Connected to relay server successfully');
+  
+  tunnel.write(JSON.stringify({
+    type: 'register',
+    subdomain: values.subdomain,
+    token: process.env.APEX_CLIENT_TOKEN
+  }) + '\n');
   });
+  
   
   tunnel.on('data', (chunk) => {
     buffer += chunk.toString();
@@ -27,6 +36,16 @@ function connect() {
   
       try {
         const request = JSON.parse(message);
+        
+        if (request.type === 'error') {
+          console.log('Relay error: ', request.message);
+          process.exit(1);
+        }
+        
+        if (request.type === 'registered') {
+          console.log(`Tunnel ready: https://${request.subdomain}.apextunnel.online`);
+          continue;
+        }
         console.log('Received request:', request.id, request.method, request.url);
   
         const options = {
@@ -51,6 +70,7 @@ function connect() {
             tunnel.write(JSON.stringify({
               id: request.id,
               statusCode: localRes.statusCode,
+              type: 'response',
               headers: localRes.headers,
               body: body
             }) + '\n');
@@ -64,6 +84,7 @@ function connect() {
           tunnel.write(JSON.stringify({
             id: request.id,
             statusCode: 502,
+            type: 'response',
             headers: {},
             body: 'Local app is unreachable'
           }) + '\n');
