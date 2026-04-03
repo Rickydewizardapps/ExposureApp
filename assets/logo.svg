@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" width="400" height="120">
+  <defs>
+    <linearGradient id="tunnelGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00D4FF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0066FF;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0f1e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0d1526;stop-opacity:1" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <style>
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+      @keyframes flow {
+        0% { stroke-dashoffset: 20; }
+        100% { stroke-dashoffset: 0; }
+      }
+      .dot1 { animation: pulse 2s ease-in-out infinite; }
+      .dot2 { animation: pulse 2s ease-in-out 0.6s infinite; }
+      .dot3 { animation: pulse 2s ease-in-out 1.2s infinite; }
+      .line { animation: flow 1.5s linear infinite; stroke-dasharray: 4 4; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="400" height="120" rx="12" fill="url(#bgGrad)"/>
+  <rect width="400" height="120" rx="12" fill="none" stroke="#00D4FF" stroke-width="0.5" opacity="0.3"/>
+
+  <!-- Icon: tunnel diagram -->
+  <!-- Left box (local) -->
+  <rect x="18" y="42" width="36" height="36" rx="6" fill="none" stroke="#00D4FF" stroke-width="1.5" opacity="0.7"/>
+  <text x="36" y="64" text-anchor="middle" font-family="monospace" font-size="9" fill="#00D4FF" opacity="0.8">local</text>
+
+  <!-- Animated tunnel line -->
+  <line x1="54" y1="60" x2="96" y2="60" stroke="url(#tunnelGrad)" stroke-width="1.5" class="line"/>
+
+  <!-- Dots on line -->
+  <circle cx="64" cy="60" r="2.5" fill="#00D4FF" class="dot1" filter="url(#glow)"/>
+  <circle cx="75" cy="60" r="2.5" fill="#00D4FF" class="dot2" filter="url(#glow)"/>
+  <circle cx="86" cy="60" r="2.5" fill="#00D4FF" class="dot3" filter="url(#glow)"/>
+
+  <!-- Right box (relay) -->
+  <rect x="96" y="42" width="36" height="36" rx="6" fill="none" stroke="#0066FF" stroke-width="1.5" opacity="0.7"/>
+  <text x="114" y="64" text-anchor="middle" font-family="monospace" font-size="9" fill="#0066FF" opacity="0.8">relay</text>
+
+  <!-- Text -->
+  <text x="152" y="52" font-family="'Courier New', monospace" font-size="28" font-weight="700" fill="url(#tunnelGrad)" filter="url(#glow)" letter-spacing="-0.5">Exposure</text>
+  <text x="152" y="78" font-family="'Courier New', monospace" font-size="28" font-weight="700" fill="#ffffff" opacity="0.9" letter-spacing="-0.5">App</text>
+
+  <!-- Tagline -->
+  <text x="152" y="98" font-family="monospace" font-size="10" fill="#00D4FF" opacity="0.5" letter-spacing="2">EXPOSE · TUNNEL · SHIP</text>
+</svg>
