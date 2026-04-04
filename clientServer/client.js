@@ -1,6 +1,7 @@
 import net from 'net';
 import http from 'http';
 import { parseArgs } from 'util';
+import 'dotenv/config';
 
 const { values } = parseArgs({
   options: {

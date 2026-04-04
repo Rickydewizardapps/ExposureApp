@@ -2,15 +2,14 @@ import net from 'net';
 import https from 'https';
 import fs from 'fs';
 import crypto from 'crypto';
+import 'dotenv/config';
 
-// global vars
+import { handleRegister } from './handlers/register.js';
+
 const pendingRequest = {};
-
-// TCP SERVER
 let clients = {};
 
 const tcpServer = net.createServer((socket) => {
-
   let buffer = '';
 
   socket.on('data', (chunk) => {
@@ -20,60 +19,22 @@ const tcpServer = net.createServer((socket) => {
     buffer = messages.pop();
 
     for (const message of messages) {
-      
       if (!message) continue;
 
       try {
         const response = JSON.parse(message);
-        
-        // register new domain
+
         if (response.type === 'register') {
-          
-          // authentiation
-          if (!response.token) {
-            socket.write(JSON.stringify({
-              type: 'error',
-              message: 'You are not authenticated. Visit our official page for auth token. \n Visit https://apextunnel.online/register'
-            }) + '\n');
-            socket.end();
-            return;
-          }
-          
-          if (response.token !== process.env.APEX_AUTH_TOKEN) {
-            socket.write(JSON.stringify({
-              type: 'error',
-              message: 'Invalid token'
-            }) + '\n');
-            socket.end();
-            return;
-          }
-          const subdomain = response.subdomain ||crypto.randomBytes(4).toString('hex');
-          
-          if (clients[subdomain]) {
-            socket.write(JSON.stringify({
-              type: 'error',
-              message: `Subdomain ${subdomain} is already taken`
-            }) + '\n');
-            socket.end();
-            return;
-          }
-          clients[subdomain] = socket;
-          
-          socket.write(JSON.stringify({
-            type: 'registered',
-            subdomain: subdomain
-          }) + '\n');
-          
+          handleRegister(socket, response, clients);
         } else {
-        
-        const res = pendingRequest[response.id];
-        if (!res) continue;
+          const res = pendingRequest[response.id];
+          if (!res) continue;
 
-        res.writeHead(response.statusCode, response.headers);
-        res.end(response.body);
+          res.writeHead(response.statusCode, response.headers);
+          res.end(response.body);
 
-        delete pendingRequest[response.id];
-      }
+          delete pendingRequest[response.id];
+        }
 
       } catch (err) {
         console.log('Malformed json from client:', err.message);
@@ -83,15 +44,33 @@ const tcpServer = net.createServer((socket) => {
 
   socket.on('end', () => {
     const subdomain = Object.keys(clients).find(key => clients[key] === socket);
-    if (subdomain) delete clients[subdomain];
-    
+    if (subdomain) {
+      delete clients[subdomain];
+      fetch(`${process.env.API_URL}/internal/tunnel/disconnected`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': process.env.INTERNAL_SECRET
+        },
+        body: JSON.stringify({ subdomain })
+      }).catch(err => console.log('API notify failed:', err.message));
+    }
     console.log('Tunnel client disconnected');
   });
 
   socket.on('error', (err) => {
-    const subdomain = Object.keys(clients).find(key=> clients[key] === socket);
-    if(subdomain) delete clients[subdomain];
-    
+    const subdomain = Object.keys(clients).find(key => clients[key] === socket);
+    if (subdomain) {
+      delete clients[subdomain];
+      fetch(`${process.env.API_URL}/internal/tunnel/disconnected`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': process.env.INTERNAL_SECRET
+        },
+        body: JSON.stringify({ subdomain })
+      }).catch(err => console.log('API notify failed:', err.message));
+    }
     console.log('Tunnel client error:', err.message);
   });
 
@@ -101,8 +80,6 @@ const tcpServer = net.createServer((socket) => {
 tcpServer.listen(9000, () => {
   console.log('TCP server running on port 9000');
 });
-
-// HTTP SERVER
 
 const sslOptions = {
   key: fs.readFileSync('./key.pem'),
@@ -120,11 +97,10 @@ const httpsServer = https.createServer(sslOptions, (req, res) => {
     const fullBody = Buffer.concat(body).toString();
     const requestId = crypto.randomUUID();
 
-    console.log(req.method, req.url, fullBody, requestId);
+    console.log(req.method, req.url, requestId);
 
     pendingRequest[requestId] = res;
 
-    // cleanup if browser disconnects
     res.on('close', () => {
       delete pendingRequest[requestId];
     });
@@ -132,13 +108,13 @@ const httpsServer = https.createServer(sslOptions, (req, res) => {
     const host = req.headers.host || '';
     const subdomain = host.split('.')[0];
     const tunnelSocket = clients[subdomain];
-    
+
     if (!tunnelSocket) {
       res.writeHead(404);
       res.end('No tunnel found for this subdomain');
       return;
     }
-    
+
     tunnelSocket.write(JSON.stringify({
       id: requestId,
       method: req.method,
@@ -148,7 +124,6 @@ const httpsServer = https.createServer(sslOptions, (req, res) => {
     }) + '\n');
 
     console.log('pending requests:', Object.keys(pendingRequest));
-    console.log('Browser request received');
   });
 });
 
