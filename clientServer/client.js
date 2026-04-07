@@ -1,29 +1,35 @@
+#!/usr/bin/env node
 import net from 'net';
 import http from 'http';
 import { parseArgs } from 'util';
-import 'dotenv/config';
-import { setConnecting, setOnline, setReconnecting, logRequest, uiActive } from './src/cli.js';
+import { setConnecting, setOnline, setReconnecting, logRequest, destroyUI, uiActive } from './src/cli.js';
+import { getStoredToken } from './src/auth.js';
 
 const { values } = parseArgs({
   options: {
-    relay: { type: 'string', default: 'localhost' },
-    port: { type: 'string', default: '8000' },
+    relay:     { type: 'string', default: 'localhost' },
+    port:      { type: 'string', default: '8000' },
     subdomain: { type: 'string', default: '' },
-    token: { type: 'string', default: '' },
+    token:     { type: 'string', default: getStoredToken() || '' },
   }
 });
 
-let buffer = '';
+if (!values.token) {
+  console.error('\x1b[31m✖\x1b[0m No auth token found. Run: apex authtoken <token>');
+  process.exit(1);
+}
 
-// show UI before connecting
+let buffer = '';
+let tunnel;
+
 setConnecting(values.port);
 
 function connect() {
-  const tunnel = net.connect(9000, values.relay, () => {
+  tunnel = net.connect(9000, values.relay, () => {
     tunnel.write(JSON.stringify({
       type: 'register',
       subdomain: values.subdomain,
-      token: process.env.APEX_CLIENT_TOKEN
+      token: values.token
     }) + '\n');
   });
 
@@ -40,7 +46,8 @@ function connect() {
         const request = JSON.parse(message);
 
         if (request.type === 'error') {
-          if (!uiActive) console.log('Relay error:', request.message);
+          destroyUI();
+          console.error('\x1b[31m✖\x1b[0m ' + request.message);
           process.exit(1);
         }
 
@@ -104,7 +111,7 @@ function connect() {
   });
 
   tunnel.on('error', (err) => {
-    if (!uiActive) console.log('An error occurred', err.message);
+    if (!uiActive) console.log('An error occurred:', err.message);
   });
 
   tunnel.on('close', () => {
@@ -112,5 +119,9 @@ function connect() {
     setTimeout(connect, 3000);
   });
 }
+
+process.on('restart', () => {
+  tunnel.destroy();
+});
 
 connect();
