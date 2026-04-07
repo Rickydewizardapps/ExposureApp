@@ -24,7 +24,7 @@ Browser → relay:443 ──── TCP ────→ client → localhost:8000
 
 ## Stack
 
-Pure Node.js — `net` `https` `crypto` `fs`. No npm packages.
+Pure Node.js — `net` `https` `crypto` `fs`. No npm packages on the relay. Client uses `blessed` for the terminal UI.
 
 ---
 
@@ -33,30 +33,41 @@ Pure Node.js — `net` `https` `crypto` `fs`. No npm packages.
 **1. Relay** — run on your VPS
 
 ```bash
-git clone https://github.com/braverachacha/ExposureApp.git
 cd ExposureApp/relayServer
 
 # generate TLS cert
 openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -sha256 -days 365 -nodes
 
-# run
-APEX_AUTH_TOKEN=your_secret node relay.js
+# configure
+cp .env.example .env  # set API_URL, INTERNAL_SECRET, FRONTEND_URL
+
+pnpm install && pnpm dev
 ```
 
 **2. Client** — run locally
 
 ```bash
 cd ExposureApp/clientServer
+pnpm install
 
-APEX_CLIENT_TOKEN=your_secret node client.js \
-  --relay your.vps.ip \
-  --port 8000 \
-  --subdomain myapp
+# save your auth token once
+node client.js authtoken <your_token>
+
+# run
+node client.js --relay your.vps.ip --port 8000
 ```
 
 ```
-✓ Connected to relay server successfully
-✓ Tunnel ready: https://myapp.yourdomain.com
+✔ Authtoken saved to ~/.apextunnel
+
+┌─────────────────────────────────────────────────────────┐
+│  ApexTunnel v1.0.0                                      │
+│  ─────────────────────────────────────────              │
+│  Account     you@example.com (Free)                     │
+│  Status      ● online                                   │
+│  Forwarding  https://swift-falcon.apextunnel.online ->  │
+│  localhost:8000                                         │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -67,7 +78,28 @@ APEX_CLIENT_TOKEN=your_secret node client.js \
 |---|---|---|
 | `--relay` | `localhost` | Relay host or IP |
 | `--port` | `8000` | Local app port |
-| `--subdomain` | random | Your subdomain |
+| `--subdomain` | random | Custom subdomain (premium only) |
+
+---
+
+## Keybinds
+
+| Key | Action |
+|---|---|
+| `Q` | Quit |
+| `R` | Restart tunnel |
+| `C` | Clear request log |
+
+---
+
+## Auth Token
+
+Your token is stored at `~/.apextunnel` after running `authtoken`. No need to pass it on every run.
+
+```bash
+node client.js authtoken <your_token>  # save once
+node client.js                          # run forever after
+```
 
 ---
 
@@ -76,8 +108,10 @@ APEX_CLIENT_TOKEN=your_secret node client.js \
 - [x] HTTPS tunnel
 - [x] Subdomain routing
 - [x] Auth tokens
+- [x] Token persistence via `~/.apextunnel`
 - [x] Auto-reconnect
 - [x] Multi-client
+- [x] Terminal UI with live request log
 - [ ] Binary executable
 - [ ] Let's Encrypt
 - [ ] Dashboard
