@@ -2,8 +2,17 @@
 import net from 'net';
 import http from 'http';
 import { parseArgs } from 'util';
-import { setConnecting, setOnline, setReconnecting, logRequest, destroyUI, uiActive } from './src/cli.js';
+import {
+  setConnecting,
+  setOnline,
+  setReconnecting,
+  logRequest,
+  destroyUI,
+  uiActive,
+} from './src/cli.js';
 import { getStoredToken } from './src/auth.js';
+
+// CLI args
 
 const { values } = parseArgs({
   options: {
@@ -11,7 +20,7 @@ const { values } = parseArgs({
     port:      { type: 'string', default: '8000' },
     subdomain: { type: 'string', default: '' },
     token:     { type: 'string', default: getStoredToken() || '' },
-  }
+  },
 });
 
 if (!values.token) {
@@ -19,109 +28,187 @@ if (!values.token) {
   process.exit(1);
 }
 
+// State
+
 let buffer = '';
 let tunnel;
 
+let intentionalClose = false;
+
+let reconnectDelay = 3_000;
+const MAX_RECONNECT_DELAY = 60_000;
+
+// Bootstrap
+
 setConnecting(values.port);
+connect();
+
+// Connection
 
 function connect() {
+  buffer = '';
+
   tunnel = net.connect(9000, values.relay, () => {
-    tunnel.write(JSON.stringify({
-      type: 'register',
-      subdomain: values.subdomain,
-      token: values.token
-    }) + '\n');
+    reconnectDelay = 3_000; // reset backoff on successful connection
+    tunnel.write(
+      JSON.stringify({
+        type:      'register',
+        subdomain: values.subdomain,
+        token:     values.token,
+      }) + '\n',
+    );
   });
 
-  tunnel.on('data', (chunk) => {
-    buffer += chunk.toString();
+  tunnel.on('data', onData);
+  tunnel.on('error', onError);
+  tunnel.on('close', onClose);
+}
+// Data handler
 
-    const messages = buffer.split('\n');
-    buffer = messages.pop();
+function onData(chunk) {
+  buffer += chunk.toString();
 
-    for (const message of messages) {
-      if (!message) continue;
+  const messages = buffer.split('\n');
+  buffer = messages.pop(); // keep incomplete tail
 
-      try {
-        const request = JSON.parse(message);
+  for (const raw of messages) {
+    if (!raw.trim()) continue;
 
-        if (request.type === 'error') {
-          destroyUI();
-          console.error('\x1b[31m✖\x1b[0m ' + request.message);
-          process.exit(1);
-        }
-
-        if (request.type === 'registered') {
-          setOnline({
-            email: request.email,
-            isPremium: request.isPremium,
-            subdomain: request.subdomain,
-            port: values.port
-          });
-          continue;
-        }
-
-        const options = {
-          hostname: 'localhost',
-          port: values.port,
-          path: request.url,
-          method: request.method,
-          headers: request.headers
-        };
-
-        const localReq = http.request(options, (localRes) => {
-          let responseBody = [];
-
-          localRes.on('data', (chunk) => {
-            responseBody.push(chunk);
-          });
-
-          localRes.on('end', () => {
-            const body = Buffer.concat(responseBody).toString();
-            logRequest(request.method, request.url, localRes.statusCode);
-
-            tunnel.write(JSON.stringify({
-              id: request.id,
-              statusCode: localRes.statusCode,
-              type: 'response',
-              headers: localRes.headers,
-              body: body
-            }) + '\n');
-          });
-        });
-
-        localReq.on('error', (err) => {
-          if (!uiActive) console.log('Local app error:', err.message);
-
-          tunnel.write(JSON.stringify({
-            id: request.id,
-            statusCode: 502,
-            type: 'response',
-            headers: {},
-            body: 'Local app is unreachable'
-          }) + '\n');
-        });
-
-        localReq.end(request.body);
-
-      } catch (err) {
-        if (!uiActive) console.log('Malformed json from relay:', err.message);
-      }
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch (err) {
+      if (!uiActive) console.error('[client] Malformed JSON from relay:', err.message);
+      continue;
     }
+
+    // Auth / control messages
+    if (msg.type === 'error') {
+      destroyUI();
+      console.error('\x1b[31m✖\x1b[0m ' + msg.message);
+      intentionalClose = true;
+      tunnel.destroy();
+      process.exit(1);
+    }
+
+    if (msg.type === 'registered') {
+      setOnline({
+        email:     msg.email,
+        isPremium: msg.isPremium,
+        subdomain: msg.subdomain,
+        port:      values.port,
+      });
+      continue;
+    }
+
+    // Proxied HTTP request from relay
+    proxyRequest(msg);
+  }
+}
+// Local proxy
+
+function proxyRequest(msg) {
+  // The relay sends the body as base64 to preserve binary fidelity
+  const bodyBuffer = msg.body
+    ? Buffer.from(msg.body, 'base64')
+    : Buffer.alloc(0);
+
+  // Strip headers that will conflict with our own local request
+  const headers = { ...msg.headers };
+  delete headers['host'];
+  // Rewrite content-length to match the decoded buffer
+  if (bodyBuffer.length > 0) {
+    headers['content-length'] = String(bodyBuffer.length);
+  } else {
+    delete headers['content-length'];
+  }
+
+  const options = {
+    hostname: '127.0.0.1',
+    port:     values.port,
+    path:     msg.url,
+    method:   msg.method,
+    headers,
+  };
+
+  const localReq = http.request(options, (localRes) => {
+    const responseChunks = [];
+
+    localRes.on('data', (chunk) => responseChunks.push(chunk));
+
+    localRes.on('end', () => {
+      // Encode the response body as base64 so binary responses survive JSON
+      const bodyBase64 = Buffer.concat(responseChunks).toString('base64');
+
+      logRequest(msg.method, msg.url, localRes.statusCode);
+
+      safeTunnelWrite({
+        id:         msg.id,
+        statusCode: localRes.statusCode,
+        type:       'response',
+        headers:    localRes.headers,
+        body:       bodyBase64,
+      });
+    });
+
+    localRes.on('error', (err) => {
+      if (!uiActive) console.error('[client] Local response error:', err.message);
+    });
   });
 
-  tunnel.on('error', (err) => {
-    if (!uiActive) console.log('An error occurred:', err.message);
+  localReq.on('error', (err) => {
+    if (!uiActive) console.error('[client] Local app error:', err.message);
+
+    safeTunnelWrite({
+      id:         msg.id,
+      statusCode: 502,
+      type:       'response',
+      headers:    { 'content-type': 'text/plain' },
+      body:       Buffer.from('Local app is unreachable').toString('base64'),
+    });
   });
 
-  tunnel.on('close', () => {
-    setReconnecting();
-    setTimeout(connect, 3000);
-  });
+  localReq.end(bodyBuffer);
 }
 
-process.on('restart', () => {
-  tunnel.destroy();
-});
+// Helpers
 
-connect();
+function safeTunnelWrite(obj) {
+  if (!tunnel || tunnel.destroyed) return;
+  try {
+    tunnel.write(JSON.stringify(obj) + '\n');
+  } catch (err) {
+    if (!uiActive) console.error('[client] Tunnel write error:', err.message);
+  }
+}
+
+function onError(err) {
+  if (!uiActive) console.error('[client] Tunnel error:', err.message);
+}
+
+function onClose() {
+  if (intentionalClose) return;
+
+  setReconnecting();
+  const delay = reconnectDelay;
+  reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
+  setTimeout(connect, delay);
+}
+
+// Graceful shutdown  (replaces the broken process.on('restart') pattern)
+
+function gracefulExit(signal) {
+  intentionalClose = true;
+  destroyUI();
+  if (tunnel && !tunnel.destroyed) tunnel.destroy();
+  process.exit(0);
+}
+
+process.on('SIGTERM', gracefulExit);
+process.on('SIGINT',  gracefulExit);
+
+process.on('apexRestart', () => {
+  buffer = '';
+  if (tunnel && !tunnel.destroyed) tunnel.destroy();
+  // onClose, fire next tick and schedule reconnect
+});
