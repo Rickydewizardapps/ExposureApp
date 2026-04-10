@@ -1,4 +1,5 @@
 import blessed from 'blessed';
+import { exec } from 'child_process'; 
 
 // State
 let screen       = null;
@@ -19,7 +20,6 @@ const buildUI = () => {
     fullUnicode: true
   });
 
-  // Top Status Bar
   statusBox = blessed.box({
     top: 0, left: 0,
     width: '100%', height: 8,
@@ -41,7 +41,7 @@ const buildUI = () => {
     style: { fg: 'cyan', bold: true },
   });
 
-  // Main Log Area - Now full width
+  // Main Log Area
   requestLog = blessed.box({
     top: 10, left: 0,
     width: '100%', height: '100%-13',
@@ -57,7 +57,7 @@ const buildUI = () => {
     height: 3, width: '100%',
     border: { type: 'line' },
     style: { border: { fg: 'cyan' } },
-    label: ' Command (type "help" for list) ',
+    label: ' Command (type "h" for help) ',
     inputOnFocus: true
   });
 
@@ -75,25 +75,17 @@ const buildUI = () => {
     screen.render();
   });
 
-  // Global Key bindings
+  // Key bindings
   screen.key(['q', 'C-c'], () => {
     destroyUI();
     process.exit(0);
   });
 
-  screen.key(['r'], () => {
-    handleCommand('restart');
-  });
+  screen.key(['r'], () => handleCommand('restart'));
+  screen.key(['c'], () => handleCommand('clear'));
+  screen.key(['h'], () => handleCommand('help'));
+  screen.key(['o'], () => handleCommand('open')); //
 
-  screen.key(['c'], () => {
-    handleCommand('clear');
-  });
-
-  screen.key(['h'], () => {
-    handleCommand('help');
-  });
-
-  // Focus command input by default
   commandInput.focus();
 };
 
@@ -101,7 +93,16 @@ const handleCommand = (cmd) => {
   const cleanCmd = cmd.trim().toLowerCase();
   if (!cleanCmd) return;
 
-  if (cleanCmd === 'restart' || cleanCmd === 'r') {
+  if (cleanCmd === 'open' || cleanCmd === 'o') {
+    if (currentInfo.subdomain) {
+      const url = `https://${currentInfo.subdomain}.apextunnel.top`;
+      const start = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+      exec(`${start} ${url}`); //
+      addLog(`{cyan-fg}  Opening ${url} in browser...{/cyan-fg}`);
+    } else {
+      addLog('{red-fg}  Error: No active subdomain to open.{/red-fg}');
+    }
+  } else if (cleanCmd === 'restart' || cleanCmd === 'r') {
     addLog('{yellow-fg}  Restarting tunnel…{/yellow-fg}');
     process.emit('apexRestart');
   } else if (cleanCmd === 'clear' || cleanCmd === 'c') {
@@ -110,12 +111,14 @@ const handleCommand = (cmd) => {
   } else if (cleanCmd === 'help' || cleanCmd === 'h') {
     addLog([
       '{bold}Available Commands:{/bold}',
-      '  {cyan-fg}help / h{/cyan-fg}    - Show this list',
-      '  {cyan-fg}restart / r{/cyan-fg} - Re-establish connection',
-      '  {cyan-fg}clear / c{/cyan-fg}   - Wipe request history',
-      '  {cyan-fg}exit / q{/cyan-fg}    - Close ApexTunnel'
+      '  {cyan-fg}open / o{/cyan-fg}     - Open link in browser',
+      '  {cyan-fg}help / h{/cyan-fg}     - Show this list',
+      '  {cyan-fg}restart / r{/cyan-fg}  - Re-establish connection',
+      '  {cyan-fg}clear / c{/cyan-fg}    - Wipe request history',
+      '  {cyan-fg}exit / q{/cyan-fg}     - Close ApexTunnel'
     ].join('\n'));
   } else if (cleanCmd === 'exit' || cleanCmd === 'q') {
+    destroyUI();
     process.exit(0);
   } else {
     addLog(`{red-fg}Unknown command: ${cleanCmd}{/red-fg}`);
@@ -123,23 +126,23 @@ const handleCommand = (cmd) => {
   screen.render();
 };
 
-// Keep existing helper functions for status and logging
-export const renderStatus = () => {
+const renderStatus = () => {
   if (!statusBox || !screen) return;
-  const accountDisplay = currentInfo.email || 'connecting…';
-  const tier = currentInfo.isPremium ? 'Premium ★' : 'Free';
-  
+
   statusBox.setContent(
     [
       `  {bold}ApexTunnel v1.0.0{/bold}`,
       `  ─────────────────────────────────────────`,
-      `  Account     ${accountDisplay} (${tier})`,
+      `  Account     ${currentInfo.email || 'connecting…'} (${currentInfo.isPremium ? 'Premium ★' : 'Free'})`,
       `  Status      ${currentInfo.online ? '{green-fg}● online{/green-fg}' : '{yellow-fg}○ connecting…{/yellow-fg}'}`,
-      `  Forwarding  ${currentInfo.subdomain ? `{cyan-fg}https://${currentInfo.subdomain}.apextunnel.top{/cyan-fg} → localhost:${currentInfo.port}` : '{yellow-fg}pending…{/yellow-fg}'}`,
+      `  Forwarding  ${currentInfo.subdomain 
+          ? `{cyan-fg}https://${currentInfo.subdomain}.apextunnel.top{/cyan-fg} → localhost:${currentInfo.port}` 
+          : '{yellow-fg}pending…{/yellow-fg}'}`,
       `  ─────────────────────────────────────────`,
-      `  Type commands in bottom bar | {bold}h{/bold} for help`,
+      `  Press {bold}O{/bold} open browser | {bold}H{/bold} help | {bold}Q{/bold} quit`,
     ].join('\n'),
   );
+
   screen.render();
 };
 
@@ -155,6 +158,7 @@ export const setOnline = (info) => {
 };
 
 export const setReconnecting = () => {
+  // Fixed: Keep the email during reconnection blips
   currentInfo = { ...currentInfo, online: false };
   renderStatus();
   addLog('{yellow-fg}  Tunnel closed. Reconnecting…{/yellow-fg}');
@@ -171,7 +175,7 @@ export const addLog = (line) => {
 
 export const logRequest = (method, url, status) => {
   if (!screen) return;
-  const time  = new Date().toLocaleTimeString();
+  const time = new Date().toLocaleTimeString();
   const color = status >= 500 ? 'red-fg' : status >= 400 ? 'yellow-fg' : 'green-fg';
   addLog(`  {bold}${time}{/bold}  {cyan-fg}${method.padEnd(7)}{/cyan-fg}  ${url}  {${color}}${status}{/${color}}`);
 };
