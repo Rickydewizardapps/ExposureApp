@@ -9,7 +9,7 @@ const clients = {};
 const pendingRequests = {};
 const TCP_PORT = Number(process.env.TCP_PORT) || 9000;
 const HTTP_PORT = Number(process.env.HTTP_PORT) || 2000;
-const REQUEST_TIMEOUT_MS = 30000;
+const REQUEST_TIMEOUT_MS = 60000; // Increased to 60s for large asset transfers
 
 function cleanupSocket(socket) {
   if (socket._apexCleaned) return;
@@ -32,7 +32,7 @@ function cleanupSocket(socket) {
 }
 
 const tcpServer = net.createServer((socket) => {
-  socket.setNoDelay(true); // Disable Nagle's algorithm for speed
+  socket.setNoDelay(true); 
   let buffer = '';
 
   const regTimeout = setTimeout(() => {
@@ -44,23 +44,23 @@ const tcpServer = net.createServer((socket) => {
 
   socket.on('data', (chunk) => {
     buffer += chunk.toString();
-    if (buffer.length > 1 * 1024 * 1024) { // Reduced to 1MB for safety
-      logger.warn('Buffer overflow, killing socket');
+    
+    //allows for large images.
+    if (buffer.length > 50 * 1024 * 1024) { 
+      logger.warn('Critical Buffer overflow (50MB+), killing socket');
       socket.destroy();
       return;
     }
 
     const messages = buffer.split('\n');
     buffer = messages.pop();
+    
     for (const raw of messages) {
       if (!raw.trim()) continue;
       let msg;
       try {
         msg = JSON.parse(raw);
-      } catch (e) {
-        logger.debug({ raw }, 'Malformed JSON received'); // Log for troubleshooting
-        continue;
-      }
+      } catch (e) { continue; }
 
       if (msg.type === 'register') {
         clearTimeout(regTimeout);
@@ -70,14 +70,16 @@ const tcpServer = net.createServer((socket) => {
       
       const pending = pendingRequests[msg.id];
       if (!pending) continue;
+      
       clearTimeout(pending.timer);
       delete pendingRequests[msg.id];
 
       const bodyBuffer = msg.body ? Buffer.from(msg.body, 'base64') : Buffer.alloc(0);
       const headers = { ...msg.headers };
       
-      // Preserve important headers but let Node handle framing
+      // Ensure Content-Length matches the actual binary size after Base64 decoding
       delete headers['transfer-encoding'];
+      headers['content-length'] = bodyBuffer.length;
       
       pending.res.writeHead(msg.statusCode, headers);
       pending.res.end(bodyBuffer);
@@ -103,13 +105,8 @@ const httpServer = http.createServer((req, res) => {
   }
 
   const bodyChunks = [];
-  req.on('error', (err) => {
-    logger.error(`Incoming request error: ${err.message}`);
-    res.writeHead(400);
-    res.end();
-  });
-
   req.on('data', (chunk) => bodyChunks.push(chunk));
+  
   req.on('end', () => {
     const requestId = crypto.randomUUID();
     const bodyBase64 = Buffer.concat(bodyChunks).toString('base64');
@@ -126,17 +123,15 @@ const httpServer = http.createServer((req, res) => {
 
     pendingRequests[requestId] = { res, timer, tunnelSocket };
     
-    const safeWrite = tunnelSocket.write(JSON.stringify({
+    const packet = JSON.stringify({
       id: requestId,
       method: req.method,
       url: req.url,
       headers: req.headers,
       body: bodyBase64
-    }) + '\n');
+    }) + '\n';
 
-    if (!safeWrite) {
-        logger.debug('Relay socket saturated, waiting for drain');
-    }
+    tunnelSocket.write(packet);
   });
 });
 
