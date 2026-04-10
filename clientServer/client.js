@@ -2,24 +2,19 @@
 import net from 'net';
 import http from 'http';
 import { parseArgs } from 'util';
-import {
-  setConnecting,
-  setOnline,
-  setReconnecting,
-  logRequest,
-  destroyUI,
-  uiActive,
-} from './src/cli.js';
+import { setConnecting, setOnline, setReconnecting, logRequest,
+  destroyUI, uiActive,} from './src/cli.js';
+  
 import { getStoredToken } from './src/auth.js';
 
-// CLI args
-
+// 1. CLI Argument Configuration
 const { values } = parseArgs({
   options: {
-    relay:     { type: 'string', default: 'localhost' },
-    port:      { type: 'string', default: '8000' },
-    subdomain: { type: 'string', default: '' },
-    token:     { type: 'string', default: getStoredToken() || '' },
+    relay:      { type: 'string', default: 'localhost' },
+    relayPort:  { type: 'string', default: '9000' },
+    port:       { type: 'string', default: '8000' },
+    subdomain:  { type: 'string', default: '' },
+    token:      { type: 'string', default: getStoredToken() || '' },
   },
 });
 
@@ -28,28 +23,25 @@ if (!values.token) {
   process.exit(1);
 }
 
-// State
-
+// 2. State Management
 let buffer = '';
 let tunnel;
-
 let intentionalClose = false;
-
 let reconnectDelay = 3_000;
 const MAX_RECONNECT_DELAY = 60_000;
 
-// Bootstrap
-
+// 3. Bootstrap Connection
 setConnecting(values.port);
 connect();
 
-// Connection
-
 function connect() {
   buffer = '';
+  intentionalClose = false;
 
-  tunnel = net.connect(9000, values.relay, () => {
-    reconnectDelay = 3_000; // reset backoff on successful connection
+  tunnel = net.connect(Number(values.relayPort), values.relay, () => {
+    reconnectDelay = 3_000; // Reset backoff
+    tunnel.setNoDelay(true); // SPEED: Disable Nagle Algorithm
+    
     tunnel.write(
       JSON.stringify({
         type:      'register',
@@ -60,29 +52,25 @@ function connect() {
   });
 
   tunnel.on('data', onData);
-  tunnel.on('error', onError);
+  tunnel.on('error', (err) => {
+    if (!uiActive) console.error('[client] Tunnel error:', err.message);
+  });
   tunnel.on('close', onClose);
 }
-// Data handler
 
+// 4. Data Handling & JSON Framing
 function onData(chunk) {
   buffer += chunk.toString();
-
   const messages = buffer.split('\n');
-  buffer = messages.pop(); // keep incomplete tail
+  buffer = messages.pop(); // Keep partial message in buffer
 
   for (const raw of messages) {
     if (!raw.trim()) continue;
-
     let msg;
     try {
       msg = JSON.parse(raw);
-    } catch (err) {
-      if (!uiActive) console.error('[client] Malformed JSON from relay:', err.message);
-      continue;
-    }
+    } catch (err) { continue; }
 
-    // Auth / control messages
     if (msg.type === 'error') {
       destroyUI();
       console.error('\x1b[31m✖\x1b[0m ' + msg.message);
@@ -92,56 +80,42 @@ function onData(chunk) {
     }
 
     if (msg.type === 'registered') {
-      setOnline({
-        email:     msg.email,
-        isPremium: msg.isPremium,
-        subdomain: msg.subdomain,
-        port:      values.port,
-      });
+      setOnline({ ...msg, port: values.port });
       continue;
     }
 
-    // Proxied HTTP request from relay
+    // If it's not a system message, it's a proxied request
     proxyRequest(msg);
   }
 }
-// Local proxy
 
+// 5. The Proxy Core (Optimized for Vite/Large Files)
 function proxyRequest(msg) {
-  // The relay sends the body as base64 to preserve binary fidelity
-  const bodyBuffer = msg.body
-    ? Buffer.from(msg.body, 'base64')
-    : Buffer.alloc(0);
-
-  // Strip headers that will conflict with our own local request
+  const bodyBuffer = msg.body ? Buffer.from(msg.body, 'base64') : Buffer.alloc(0);
   const headers = { ...msg.headers };
+  
+  // FIX: Prevent 'Invalid Host Header' errors in local dev servers
   delete headers['host'];
-  // Rewrite content-length to match the decoded buffer
+  
   if (bodyBuffer.length > 0) {
     headers['content-length'] = String(bodyBuffer.length);
-  } else {
-    delete headers['content-length'];
   }
 
-  const options = {
+  const localReq = http.request({
     hostname: '127.0.0.1',
-    port:     values.port,
+    port:     Number(values.port),
     path:     msg.url,
     method:   msg.method,
     headers,
-  };
-
-  const localReq = http.request(options, (localRes) => {
+  }, (localRes) => {
     const responseChunks = [];
 
     localRes.on('data', (chunk) => responseChunks.push(chunk));
-
+    
     localRes.on('end', () => {
-      // Encode the response body as base64 so binary responses survive JSON
       const bodyBase64 = Buffer.concat(responseChunks).toString('base64');
-
       logRequest(msg.method, msg.url, localRes.statusCode);
-
+      
       safeTunnelWrite({
         id:         msg.id,
         statusCode: localRes.statusCode,
@@ -152,13 +126,12 @@ function proxyRequest(msg) {
     });
 
     localRes.on('error', (err) => {
-      if (!uiActive) console.error('[client] Local response error:', err.message);
+      localRes.destroy(); // CLEANUP: Prevent memory leaks
     });
   });
 
   localReq.on('error', (err) => {
-    if (!uiActive) console.error('[client] Local app error:', err.message);
-
+    localReq.destroy();
     safeTunnelWrite({
       id:         msg.id,
       statusCode: 502,
@@ -171,44 +144,30 @@ function proxyRequest(msg) {
   localReq.end(bodyBuffer);
 }
 
-// Helpers
-
+// 6. Helpers & Cleanup
 function safeTunnelWrite(obj) {
   if (!tunnel || tunnel.destroyed) return;
   try {
     tunnel.write(JSON.stringify(obj) + '\n');
   } catch (err) {
-    if (!uiActive) console.error('[client] Tunnel write error:', err.message);
+    if (!uiActive) console.error('[client] Write error:', err.message);
   }
-}
-
-function onError(err) {
-  if (!uiActive) console.error('[client] Tunnel error:', err.message);
 }
 
 function onClose() {
   if (intentionalClose) return;
-
   setReconnecting();
-  const delay = reconnectDelay;
+  setTimeout(connect, reconnectDelay);
   reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
-  setTimeout(connect, delay);
 }
 
-// Graceful shutdown  (replaces the broken process.on('restart') pattern)
-
-function gracefulExit(signal) {
+// Handle exit signals (Ctrl+C)
+const gracefulExit = () => {
   intentionalClose = true;
   destroyUI();
-  if (tunnel && !tunnel.destroyed) tunnel.destroy();
+  if (tunnel) tunnel.destroy();
   process.exit(0);
-}
+};
 
+process.on('SIGINT', gracefulExit);
 process.on('SIGTERM', gracefulExit);
-process.on('SIGINT',  gracefulExit);
-
-process.on('apexRestart', () => {
-  buffer = '';
-  if (tunnel && !tunnel.destroyed) tunnel.destroy();
-  // onClose, fire next tick and schedule reconnect
-});

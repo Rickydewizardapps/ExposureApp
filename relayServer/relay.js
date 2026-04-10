@@ -32,8 +32,9 @@ function cleanupSocket(socket) {
 }
 
 const tcpServer = net.createServer((socket) => {
+  socket.setNoDelay(true); // Disable Nagle's algorithm for speed
   let buffer = '';
-  // 10 second window for registration
+
   const regTimeout = setTimeout(() => {
     if (!socket._apexRegistered) {
       logger.warn({ remote: socket.remoteAddress }, 'Client timed out before registering');
@@ -43,7 +44,7 @@ const tcpServer = net.createServer((socket) => {
 
   socket.on('data', (chunk) => {
     buffer += chunk.toString();
-    if (buffer.length > 5 * 1024 * 1024) { // 5MB metadata limit
+    if (buffer.length > 1 * 1024 * 1024) { // Reduced to 1MB for safety
       logger.warn('Buffer overflow, killing socket');
       socket.destroy();
       return;
@@ -57,6 +58,7 @@ const tcpServer = net.createServer((socket) => {
       try {
         msg = JSON.parse(raw);
       } catch (e) {
+        logger.debug({ raw }, 'Malformed JSON received'); // Log for troubleshooting
         continue;
       }
 
@@ -73,8 +75,9 @@ const tcpServer = net.createServer((socket) => {
 
       const bodyBuffer = msg.body ? Buffer.from(msg.body, 'base64') : Buffer.alloc(0);
       const headers = { ...msg.headers };
+      
+      // Preserve important headers but let Node handle framing
       delete headers['transfer-encoding'];
-      delete headers['content-length'];
       
       pending.res.writeHead(msg.statusCode, headers);
       pending.res.end(bodyBuffer);
@@ -100,10 +103,17 @@ const httpServer = http.createServer((req, res) => {
   }
 
   const bodyChunks = [];
+  req.on('error', (err) => {
+    logger.error(`Incoming request error: ${err.message}`);
+    res.writeHead(400);
+    res.end();
+  });
+
   req.on('data', (chunk) => bodyChunks.push(chunk));
   req.on('end', () => {
     const requestId = crypto.randomUUID();
     const bodyBase64 = Buffer.concat(bodyChunks).toString('base64');
+    
     const timer = setTimeout(() => {
       if (pendingRequests[requestId]) {
         try {
@@ -115,13 +125,18 @@ const httpServer = http.createServer((req, res) => {
     }, REQUEST_TIMEOUT_MS);
 
     pendingRequests[requestId] = { res, timer, tunnelSocket };
-    tunnelSocket.write(JSON.stringify({
+    
+    const safeWrite = tunnelSocket.write(JSON.stringify({
       id: requestId,
       method: req.method,
       url: req.url,
       headers: req.headers,
       body: bodyBase64
     }) + '\n');
+
+    if (!safeWrite) {
+        logger.debug('Relay socket saturated, waiting for drain');
+    }
   });
 });
 
