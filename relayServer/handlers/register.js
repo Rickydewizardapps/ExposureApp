@@ -22,7 +22,7 @@ export async function handleRegister(socket, msg, clients) {
 
     const data = await apiRes.json();
     
-    // If API is not OK, we notify and let the catch block handle destruction
+    // If API is not OK, notify and let the catch block handle destruction
     if (!apiRes.ok) {
       socket.write(JSON.stringify({ type: 'error', message: data.message || 'API Rejected' }) + '\n');
       throw new Error(data.message || 'API Rejected');
@@ -38,14 +38,22 @@ export async function handleRegister(socket, msg, clients) {
     try {
       clients[sub] = socket;
       socket._apexRegistered = true;
-      socket.write(JSON.stringify({ type: 'registered', subdomain: sub }) + '\n');
+      
+      // end full account details
+      socket.write(JSON.stringify({ 
+        type: 'registered', 
+        subdomain: sub,
+        email: data.email,
+        isPremium: data.isPremium 
+      }) + '\n');
+      
       logger.info({ sub, user: data.email }, 'New client registered');
     } finally {
       registeringSubdomains.delete(sub);
     }
   } catch (err) {
     logger.error(`Registration failed: ${err.message}`);
-    // We use destroy() to ensure the client doesn't hang on an invalid state
+    // use destroy() to ensure the client doesn't hang on an invalid state
     socket.destroy();
   }
 }
