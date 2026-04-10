@@ -65,7 +65,7 @@ node client.js --relay your.vps.ip --port 8000
 │  ─────────────────────────────────────────              │
 │  Account     you@example.com (Free)                     │
 │  Status      ● online                                   │
-│  Forwarding  https://swift-falcon.apextunnel.online ->  │
+│  Forwarding  https://swift-falcon.apextunnel.top ->  │
 │  localhost:8000                                         │
 └─────────────────────────────────────────────────────────┘
 ```

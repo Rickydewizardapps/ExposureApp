@@ -91,7 +91,7 @@ const renderStatus = () => {
         : '{yellow-fg}○ connecting…{/yellow-fg}'}`,
       `  Forwarding  ${
         currentInfo.subdomain
-          ? `{cyan-fg}https://${currentInfo.subdomain}.apextunnel.online{/cyan-fg} → localhost:${currentInfo.port}`
+          ? `{cyan-fg}https://${currentInfo.subdomain}.apextunnel.top{/cyan-fg} → localhost:${currentInfo.port}`
           : '{yellow-fg}pending…{/yellow-fg}'
       }`,
       `  ─────────────────────────────────────────`,
