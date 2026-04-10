@@ -131,7 +131,7 @@ const renderStatus = () => {
 
   statusBox.setContent(
     [
-      `  {bold}ApexTunnel v1.0.0{/bold}`,
+      `  {bold}ApexTunnel v1.0.1{/bold}`,
       `  ─────────────────────────────────────────`,
       `  Account     ${currentInfo.email || 'connecting…'} (${currentInfo.isPremium ? 'Premium ★' : 'Free'})`,
       `  Status      ${currentInfo.online ? '{green-fg}● online{/green-fg}' : '{yellow-fg}○ connecting…{/yellow-fg}'}`,

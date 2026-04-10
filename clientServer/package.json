@@ -1,7 +1,7 @@
 {
-  "name": "clientServer",
-  "version": "1.0.0",
-  "description": "",
+  "name": "apex-client",
+  "version": "1.0.1",
+  "description": "Local bridge for ApexTunnel, proxying local traffic to the public internet.",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
+  "author": "BraveraTech",
   "license": "ISC",
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {

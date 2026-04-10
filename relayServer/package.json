@@ -1,7 +1,7 @@
 {
-  "name": "relayServer",
-  "version": "1.0.0",
-  "description": "",
+  "name": "apex-relay",
+  "version": "1.0.1",
+  "description": "High-performance TCP/HTTP relay for the ApexTunnel ecosystem.",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
+  "author": "BraveraTech",
   "license": "ISC",
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {
