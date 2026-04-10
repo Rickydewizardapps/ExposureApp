@@ -50,11 +50,21 @@ pnpm install && pnpm dev
 cd ExposureApp/clientServer
 pnpm install
 
+# make the script executable
+
+chmod +x apex.sh
+
 # save your auth token once
-node client.js authtoken <your_token>
+./apex.sh authtoken <your_token>
 
 # run
-node client.js --relay your.vps.ip --port 8000
+./apex.sh
+# or flag it with your port 
+
+./apex.sh --port 3000 # change 3000 to anything
+
+# or add subdomain if you have one 
+./apex.sh --port 3000 --subdomain user
 ```
 
 ```
@@ -76,8 +86,7 @@ node client.js --relay your.vps.ip --port 8000
 
 | Flag | Default | Description |
 |---|---|---|
-| `--relay` | `localhost` | Relay host or IP |
-| `--port` | `8000` | Local app port |
+| `--port` | `3000` | Local app port |
 | `--subdomain` | random | Custom subdomain (premium only) |
 
 ---
@@ -96,11 +105,6 @@ node client.js --relay your.vps.ip --port 8000
 
 Your token is stored at `~/.apextunnel` after running `authtoken`. No need to pass it on every run.
 
-```bash
-node client.js authtoken <your_token>  # save once
-node client.js                          # run forever after
-```
-
 ---
 
 ## Progress
@@ -112,8 +116,8 @@ node client.js                          # run forever after
 - [x] Auto-reconnect
 - [x] Multi-client
 - [x] Terminal UI with live request log
-- [ ] Binary executable
-- [ ] Let's Encrypt
+- [x] Binary executable
+- [x] Let's Encrypt
 - [ ] Dashboard
 
 ---
