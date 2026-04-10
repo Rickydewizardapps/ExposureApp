@@ -1,14 +1,20 @@
 #!/bin/bash
 
 # Configuration
-RELAY_IP="37.59.215.255"
+RELAY_URL="relay.apextunnel.top"
 DEFAULT_PORT="8080"
+
+# Check if the first argument is 'authtoken'
+if [ "$1" == "authtoken" ]; then
+    node client.js "$@"
+    exit 0
+fi
 
 # If the user didn't provide a --port, we add the default one
 if [[ "$*" != *"--port"* ]]; then
     set -- "$@" --port "$DEFAULT_PORT"
 fi
 
-# Run the client with the Relay IP and all arguments
-node client.js --relay "$RELAY_IP" "$@"
+echo "🚀 Connecting to Apex Relay: $RELAY_URL"
+node client.js --relay "$RELAY_URL" "$@"
 
