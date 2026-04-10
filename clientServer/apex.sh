@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-RELAY_URL="relay.alextunnel.top"
+RELAY_URL="relay.apextunnel.top"
 DEFAULT_PORT="8080"
 
 # 1. Handle "authtoken" command separately
@@ -26,4 +26,6 @@ if [[ "$*" != *"--port"* ]]; then
 fi
 
 echo "🚀 Connecting to Apex Relay: $RELAY_URL"
+
+# 4. Execute Client
 node client.js --relay "$RELAY_URL" "$@"
