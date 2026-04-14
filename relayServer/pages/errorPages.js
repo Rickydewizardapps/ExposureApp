@@ -44,7 +44,7 @@ export const errorPage = (code, title, message) => `
         <h1>${title}</h1>
         <p>${message}</p>
         <a href="/" class="btn">Try Again</a>
-        <div class="footer">ApexTunnel v1.0.1 • BraveraTech</div>
+        <div class="footer">ApexTunnel v1.1.3 • BraveraTech</div>
     </div>
 </body>
 </html>`;

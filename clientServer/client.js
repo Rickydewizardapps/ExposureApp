@@ -6,6 +6,7 @@ import { setConnecting, setOnline, setReconnecting, logRequest,
   destroyUI, uiActive,} from './src/cli.js';
   
 import { getStoredToken } from './src/auth.js';
+import { getClientErrorPage } from './src/clientError.js';
 
 // 1. CLI Argument Configuration
 const { values } = parseArgs({
@@ -27,8 +28,8 @@ if (!values.token) {
 let buffer = '';
 let tunnel;
 let intentionalClose = false;
-let reconnectDelay = 3_000;
-const MAX_RECONNECT_DELAY = 60_000;
+let reconnectDelay = 3000;
+const MAX_RECONNECT_DELAY = 60000;
 
 // 3. Bootstrap Connection
 setConnecting(values.port);
@@ -39,8 +40,8 @@ function connect() {
   intentionalClose = false;
 
   tunnel = net.connect(Number(values.relayPort), values.relay, () => {
-    reconnectDelay = 3_000; // Reset backoff
-    tunnel.setNoDelay(true); // SPEED: Disable Nagle Algorithm
+    reconnectDelay = 3000; 
+    tunnel.setNoDelay(true); 
     
     tunnel.write(
       JSON.stringify({
@@ -58,18 +59,15 @@ function connect() {
   tunnel.on('close', onClose);
 }
 
-// 4. Data Handling & JSON Framing
 function onData(chunk) {
   buffer += chunk.toString();
   const messages = buffer.split('\n');
-  buffer = messages.pop(); // Keep partial message in buffer
+  buffer = messages.pop(); 
 
   for (const raw of messages) {
     if (!raw.trim()) continue;
     let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch (err) { continue; }
+    try { msg = JSON.parse(raw); } catch (err) { continue; }
 
     if (msg.type === 'error') {
       destroyUI();
@@ -84,17 +82,14 @@ function onData(chunk) {
       continue;
     }
 
-    // If it's not a system message, it's a proxied request
     proxyRequest(msg);
   }
 }
 
-// 5. The Proxy Core (Optimized for Vite/Large Files)
 function proxyRequest(msg) {
   const bodyBuffer = msg.body ? Buffer.from(msg.body, 'base64') : Buffer.alloc(0);
   const headers = { ...msg.headers };
   
-  // FIX: Prevent 'Invalid Host Header' errors in local dev servers
   delete headers['host'];
   
   if (bodyBuffer.length > 0) {
@@ -109,9 +104,7 @@ function proxyRequest(msg) {
     headers,
   }, (localRes) => {
     const responseChunks = [];
-
     localRes.on('data', (chunk) => responseChunks.push(chunk));
-    
     localRes.on('end', () => {
       const bodyBase64 = Buffer.concat(responseChunks).toString('base64');
       logRequest(msg.method, msg.url, localRes.statusCode);
@@ -126,25 +119,32 @@ function proxyRequest(msg) {
     });
 
     localRes.on('error', (err) => {
-      localRes.destroy(); // CLEANUP: Prevent memory leaks
+      localRes.destroy();
     });
   });
 
   localReq.on('error', (err) => {
     localReq.destroy();
+    
+    // Generate the HTML error page with a retry button
+    const html = getClientErrorPage(values.port);
+    logRequest(msg.method, msg.url, 502);
+
     safeTunnelWrite({
       id:         msg.id,
       statusCode: 502,
       type:       'response',
-      headers:    { 'content-type': 'text/plain' },
-      body:       Buffer.from('Local app is unreachable').toString('base64'),
+      headers:    { 
+        'content-type': 'text/html',
+        'content-length': Buffer.byteLength(html).toString()
+      },
+      body:       Buffer.from(html).toString('base64'),
     });
   });
 
   localReq.end(bodyBuffer);
 }
 
-// 6. Helpers & Cleanup
 function safeTunnelWrite(obj) {
   if (!tunnel || tunnel.destroyed) return;
   try {
@@ -161,7 +161,6 @@ function onClose() {
   reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
 }
 
-// Handle exit signals (Ctrl+C)
 const gracefulExit = () => {
   intentionalClose = true;
   destroyUI();
