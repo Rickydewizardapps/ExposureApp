@@ -15,7 +15,7 @@ if (cmd === 'authtoken') {
   const token = tokenArg.trim();
 
   // Basic sanity check — reject wrong values
-  if (token.length < 8) {
+  if (token.length < 64) {
     console.error('Token looks too short. Please check and try again.');
     process.exit(1);
   }

@@ -4,12 +4,13 @@ import crypto from 'crypto';
 import 'dotenv/config';
 import logger from './logger.js';
 import { handleRegister } from './handlers/register.js';
+import { errorPage } from './pages/errorPages.js';
 
 const clients = {};
 const pendingRequests = {};
 const TCP_PORT = Number(process.env.TCP_PORT) || 9000;
 const HTTP_PORT = Number(process.env.HTTP_PORT) || 2000;
-const REQUEST_TIMEOUT_MS = 60000; // Increased to 60s for large asset transfers
+const REQUEST_TIMEOUT_MS = 60000;
 
 function cleanupSocket(socket) {
   if (socket._apexCleaned) return;
@@ -23,8 +24,8 @@ function cleanupSocket(socket) {
     if (pending.tunnelSocket === socket) {
       clearTimeout(pending.timer);
       try {
-        pending.res.writeHead(502);
-        pending.res.end('Tunnel disconnected');
+        pending.res.writeHead(502, { 'Content-Type': 'text/html' });
+        pending.res.end(errorPage('Tunnel Disconnected', 'The connection to your local client was lost. Check your terminal.'));
       } catch (_) {}
       delete pendingRequests[id];
     }
@@ -44,10 +45,7 @@ const tcpServer = net.createServer((socket) => {
 
   socket.on('data', (chunk) => {
     buffer += chunk.toString();
-    
-    //allows for large images.
     if (buffer.length > 50 * 1024 * 1024) { 
-      logger.warn('Critical Buffer overflow (50MB+), killing socket');
       socket.destroy();
       return;
     }
@@ -58,9 +56,7 @@ const tcpServer = net.createServer((socket) => {
     for (const raw of messages) {
       if (!raw.trim()) continue;
       let msg;
-      try {
-        msg = JSON.parse(raw);
-      } catch (e) { continue; }
+      try { msg = JSON.parse(raw); } catch (e) { continue; }
 
       if (msg.type === 'register') {
         clearTimeout(regTimeout);
@@ -76,8 +72,6 @@ const tcpServer = net.createServer((socket) => {
 
       const bodyBuffer = msg.body ? Buffer.from(msg.body, 'base64') : Buffer.alloc(0);
       const headers = { ...msg.headers };
-      
-      // Ensure Content-Length matches the actual binary size after Base64 decoding
       delete headers['transfer-encoding'];
       headers['content-length'] = bodyBuffer.length;
       
@@ -99,8 +93,8 @@ const httpServer = http.createServer((req, res) => {
   const tunnelSocket = clients[subdomain];
 
   if (!tunnelSocket) {
-    res.writeHead(404);
-    res.end('No tunnel found');
+    res.writeHead(404, { 'Content-Type': 'text/html' });
+    res.end(errorPage('No Tunnel Found', `The subdomain <b>${subdomain}</b> is not currently active. Start your client to connect.`));
     return;
   }
 
@@ -114,8 +108,8 @@ const httpServer = http.createServer((req, res) => {
     const timer = setTimeout(() => {
       if (pendingRequests[requestId]) {
         try {
-          pendingRequests[requestId].res.writeHead(504);
-          pendingRequests[requestId].res.end('Tunnel Timeout');
+          pendingRequests[requestId].res.writeHead(504, { 'Content-Type': 'text/html' });
+          pendingRequests[requestId].res.end(errorPage('Gateway Timeout', 'Your local application took too long to respond.'));
         } catch (_) {}
         delete pendingRequests[requestId];
       }
@@ -124,11 +118,8 @@ const httpServer = http.createServer((req, res) => {
     pendingRequests[requestId] = { res, timer, tunnelSocket };
     
     const packet = JSON.stringify({
-      id: requestId,
-      method: req.method,
-      url: req.url,
-      headers: req.headers,
-      body: bodyBase64
+      id: requestId, method: req.method, url: req.url,
+      headers: req.headers, body: bodyBase64
     }) + '\n';
 
     tunnelSocket.write(packet);
