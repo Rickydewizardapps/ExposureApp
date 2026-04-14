@@ -4,13 +4,20 @@ import crypto from 'crypto';
 import 'dotenv/config';
 import logger from './logger.js';
 import { handleRegister } from './handlers/register.js';
-import { errorPage } from './pages/errorPages.js';
+import { errorPage } from './errorPage.js';
 
 const clients = {};
 const pendingRequests = {};
 const TCP_PORT = Number(process.env.TCP_PORT) || 9000;
 const HTTP_PORT = Number(process.env.HTTP_PORT) || 2000;
 const REQUEST_TIMEOUT_MS = 60000;
+
+// Helper to send branded HTML errors
+const sendError = (res, status, title, message) => {
+  if (res.writableEnded) return;
+  res.writeHead(status, { 'Content-Type': 'text/html' });
+  res.end(errorPage(status, title, message));
+};
 
 function cleanupSocket(socket) {
   if (socket._apexCleaned) return;
@@ -24,8 +31,7 @@ function cleanupSocket(socket) {
     if (pending.tunnelSocket === socket) {
       clearTimeout(pending.timer);
       try {
-        pending.res.writeHead(502, { 'Content-Type': 'text/html' });
-        pending.res.end(errorPage('Tunnel Disconnected', 'The connection to your local client was lost. Check your terminal.'));
+        sendError(pending.res, 502, 'Tunnel Disconnected', 'The connection to the <b>Apex Client</b> was lost mid-request.');
       } catch (_) {}
       delete pendingRequests[id];
     }
@@ -93,8 +99,7 @@ const httpServer = http.createServer((req, res) => {
   const tunnelSocket = clients[subdomain];
 
   if (!tunnelSocket) {
-    res.writeHead(404, { 'Content-Type': 'text/html' });
-    res.end(errorPage('No Tunnel Found', `The subdomain <b>${subdomain}</b> is not currently active. Start your client to connect.`));
+    sendError(res, 404, 'No Tunnel Found', `The subdomain <b>${subdomain}</b> is not connected to a client.`);
     return;
   }
 
@@ -108,8 +113,7 @@ const httpServer = http.createServer((req, res) => {
     const timer = setTimeout(() => {
       if (pendingRequests[requestId]) {
         try {
-          pendingRequests[requestId].res.writeHead(504, { 'Content-Type': 'text/html' });
-          pendingRequests[requestId].res.end(errorPage('Gateway Timeout', 'Your local application took too long to respond.'));
+          sendError(pendingRequests[requestId].res, 504, 'Gateway Timeout', 'The tunnel is open, but your <b>local server</b> is not responding.');
         } catch (_) {}
         delete pendingRequests[requestId];
       }
