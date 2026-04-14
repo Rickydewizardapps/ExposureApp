@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import 'dotenv/config';
 import logger from './logger.js';
 import { handleRegister } from './handlers/register.js';
-import { errorPage } from './errorPage.js';
+import { errorPage } from './pages/errorPages.js';
 
 const clients = {};
 const pendingRequests = {};
