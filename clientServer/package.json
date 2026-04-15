@@ -10,21 +10,16 @@
   "scripts": {
     "start": "node client.js",
     "dev": "nodemon client.js",
-    "bundle": "esbuild client.js --bundle --platform=node --outfile=dist/bundle.cjs --format=cjs",
+    "bundle": "mkdir -p dist && esbuild client.js --bundle --platform=node --outfile=dist/bundle.cjs --format=cjs --external:blessed --external:dotenv",
     "build": "pnpm run bundle && pkg . --output bin/apex"
   },
-  "keywords": [
-    "tunnel",
-    "reverse-proxy",
-    "localhost",
-    "developer-tools"
-  ],
   "author": "BraveraTech",
   "license": "ISC",
   "packageManager": "pnpm@10.33.0",
   "pkg": {
     "assets": [
-      "assets/**/*"
+      "node_modules/blessed/**/*",
+      "node_modules/dotenv/**/*"
     ],
     "targets": [
       "node18-linux-x64",
