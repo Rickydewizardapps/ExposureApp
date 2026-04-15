@@ -2,38 +2,39 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-const CONFIG_PATH = path.join(os.homedir(), '.apextunnel');
+const CONFIG_PATH    = path.join(os.homedir(), '.apextunnel');
+const MIN_TOKEN_LEN  = 64;
 
-const [,, cmd, tokenArg] = process.argv;
-
-if (cmd === 'authtoken') {
-  if (!tokenArg || !tokenArg.trim()) {
-    console.error('Usage: apex authtoken <token>');
-    process.exit(1);
+/**
+ * Save an auth token to disk.
+ * Throws a descriptive Error on any validation or write failure.
+ */
+export function saveToken(token) {
+  if (!token || typeof token !== 'string') {
+    throw new Error('Invalid token.');
   }
 
-  const token = tokenArg.trim();
+  const trimmed = token.trim();
 
-  // Basic sanity check — reject wrong values
-  if (token.length < 64) {
-    console.error('Token looks too short. Please check and try again.');
-    process.exit(1);
+  if (trimmed.length < MIN_TOKEN_LEN) {
+    throw new Error(`Token too short. Must be at least ${MIN_TOKEN_LEN} characters.`);
+  }
+
+  // Only allow safe token characters — no injection risk
+  if (!/^[A-Za-z0-9\-_.]+$/.test(trimmed)) {
+    throw new Error('Token contains invalid characters.');
   }
 
   try {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ token }, null, 2), {
-      mode: 0o600, // owner read/write only 
-    });
-    console.log(`\x1b[32m✔\x1b[0m Authtoken saved to ${CONFIG_PATH}`);
+    fs.writeFileSync(
+      CONFIG_PATH,
+      JSON.stringify({ token: trimmed }, null, 2),
+      { mode: 0o600 }, // owner read/write only
+    );
   } catch (err) {
-    console.error('Failed to save token:', err.message);
-    process.exit(1);
+    throw new Error(`Failed to save token: ${err.message}`);
   }
-
-  process.exit(0);
 }
-
-// Runtime helper
 
 /**
  * Read the stored auth token from disk.
@@ -44,7 +45,7 @@ export function getStoredToken() {
     const raw  = fs.readFileSync(CONFIG_PATH, 'utf8');
     const data = JSON.parse(raw);
     const tok  = data?.token;
-    return typeof tok === 'string' && tok.trim().length >= 8
+    return typeof tok === 'string' && tok.trim().length >= MIN_TOKEN_LEN
       ? tok.trim()
       : null;
   } catch {

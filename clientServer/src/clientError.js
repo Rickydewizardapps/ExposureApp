@@ -46,9 +46,7 @@ export const getClientErrorPage = (port) => `
         <div class="status-code">502</div>
         <h1>Local App Unreachable</h1>
         <p>The tunnel is active, but your local server on port <b>${port}</b> is not responding.</p>
-
         <button onclick="window.location.reload()" class="btn">Retry Connection</button>
-        
         <div class="footer">ApexTunnel V1.1.3 • BraveraTech</div>
     </div>
 </body>
