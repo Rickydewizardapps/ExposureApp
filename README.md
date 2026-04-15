@@ -30,64 +30,88 @@ Pure Node.js — `net` `https` `crypto` `fs`. No npm packages on the relay. Clie
 
 ## Setup
 
-**1. Relay** — run on your VPS
+**1. Relay** - Run on your VPS
 
 ```bash
 cd ExposureApp/relayServer
 
-# generate TLS cert
+# 1. Generate TLS certificates for secure tunneling
 openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -sha256 -days 365 -nodes
 
-# configure
-cp .env.example .env  # set API_URL, INTERNAL_SECRET, FRONTEND_URL
+# 2. Configure environment
+cp .env.example .env  
+# Edit .env to set your API_URL, INTERNAL_SECRET, and FRONTEND_URL
 
-pnpm install && pnpm dev
+# 3. Start the relay
+pnpm install
+pnpm dev
 ```
 
 **2. Client** — run locally
 
+**Option A — Download binary** (Linux / macOS / Windows)
+
+Grab the binary for your platform from the [releases page](https://github.com/braverachacha/ExposureApp/releases), then:
+
+```bash
+# Linux/macOS — make it executable and move to PATH
+chmod +x apex-linux-arm64   # or apex-linux-x64 / apex-macos-x64
+sudo mv apex-linux-arm64 /usr/local/bin/apex
+```
+
+**Option B — Run from source** (Termux / Android or any Node.js environment)
+
 ```bash
 cd ExposureApp/clientServer
 pnpm install
+pnpm run bundle          # builds dist/bundle.cjs
 
-# make the script executable
+# Link globally so the `apex` command is available anywhere
+pnpm link --global
+```
 
-chmod +x apex.sh
+---
 
-# save your auth token once
-./apex.sh authtoken <your_token>
+Once installed, save your auth token once:
 
-# run
-./apex.sh
-# or flag it with your port 
+```bash
+apex authtoken <your_token>
+```
 
-./apex.sh --port 3000 # change 3000 to anything
+Then expose a local port:
 
-# or add subdomain if you have one 
-./apex.sh --port 3000 --subdomain user
+```bash
+# Expose port 3000
+apex http 3000
+
+# Expose with a custom subdomain
+apex http 3000 --subdomain myapp
 ```
 
 ```
 ✔ Authtoken saved to ~/.apextunnel
 
 ┌─────────────────────────────────────────────────────────┐
-│  ApexTunnel v1.0.0                                      │
+│  ApexTunnel v1.1.3                                      │
 │  ─────────────────────────────────────────              │
 │  Account     you@example.com (Free)                     │
 │  Status      ● online                                   │
-│  Forwarding  https://swift-falcon.apextunnel.top ->  │
-│  localhost:8000                                         │
+│  Forwarding  https://swift-falcon.apextunnel.top ->     │
+│  localhost:3000                                         │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Options
+## Commands
 
-| Flag | Default | Description |
-|---|---|---|
-| `--port` | `3000` | Local app port |
-| `--subdomain` | random | Custom subdomain (premium only) |
+| Command | Description |
+|---|---|
+| `apex http <port>` | Expose a local port |
+| `apex http <port> --subdomain <name>` | Expose with a custom subdomain |
+| `apex authtoken <token>` | Save your auth token |
+| `apex status` | Show saved token & relay info |
+| `apex help` | Show help message |
 
 ---
 
@@ -104,6 +128,15 @@ chmod +x apex.sh
 ## Auth Token
 
 Your token is stored at `~/.apextunnel` after running `authtoken`. No need to pass it on every run.
+
+---
+
+## Env Overrides (debugging)
+
+| Variable | Default | Description |
+|---|---|---|
+| `APEX_RELAY` | `relay.apextunnel.top` | Relay hostname |
+| `APEX_RELAY_PORT` | `9000` | Relay port |
 
 ---
 
