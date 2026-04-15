@@ -5,25 +5,32 @@
   "main": "client.js",
   "type": "module",
   "bin": {
-    "apex": "./client.js"
+    "apex": "./launcher.cjs"
   },
   "scripts": {
     "start": "node client.js",
     "dev": "nodemon client.js",
     "build": "pkg . --output bin/apex"
   },
-  "keywords": [],
+  "keywords": [
+    "tunnel",
+    "reverse-proxy",
+    "localhost",
+    "developer-tools"
+  ],
   "author": "BraveraTech",
   "license": "ISC",
   "packageManager": "pnpm@10.33.0",
   "pkg": {
     "assets": [
-      "src/**/*"
+      "src/**/*",
+      "client.js"
     ],
     "targets": [
       "node18-linux-x64",
       "node18-macos-x64",
-      "node18-win-x64"
+      "node18-win-x64",
+      "node18-linux-arm64"
     ]
   },
   "devDependencies": {
