@@ -1,59 +1,98 @@
 import logger from '../logger.js';
+
+// Tracks subdomains mid-registration to prevent race conditions.
+
 const registeringSubdomains = new Set();
 
 export async function handleRegister(socket, msg, clients) {
-  if (!msg.token?.trim()) {
-    socket.write(JSON.stringify({ type: 'error', message: 'Token required' }) + '\n');
-    return socket.destroy(); // Forcefully close the connection
+  const token = msg.token?.trim();
+
+  if (!token) {
+    socket.write(JSON.stringify({ type: 'error',
+      message: 'Token required.' 
+    }) + '\n');
+    socket.end(); // drain the write before closing
+    return;
   }
 
+  let apiRes, data;
+
   try {
-    const apiRes = await fetch(`${process.env.API_URL}/internal/tunnel/connected`, {
-      method: 'POST',
+    apiRes = await fetch(`${process.env.API_URL}/internal/tunnel/connected`, {
+      method:  'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'x-internal-secret': process.env.INTERNAL_SECRET
+        'Content-Type':      'application/json',
+        'x-internal-secret': process.env.INTERNAL_SECRET,
       },
       body: JSON.stringify({
-        token: msg.token.trim(),
-        subdomain: msg.subdomain || ''
+        token,
+        subdomain: msg.subdomain?.trim() || '',
       }),
     });
 
-    const data = await apiRes.json();
-    
-    // If API is not OK, notify and let the catch block handle destruction
-    if (!apiRes.ok) {
-      socket.write(JSON.stringify({ type: 'error', message: data.message || 'API Rejected' }) + '\n');
-      throw new Error(data.message || 'API Rejected');
-    }
+    data = await apiRes.json();
+  } catch (err) {
+    logger.error(`Registration fetch failed: ${err.message}`);
+    socket.write(JSON.stringify({
+      type: 'error', 
+      message: 'Could not reach auth service.'
+    }) + '\n');
+    socket.end();
+    return;
+  }
 
-    const sub = data.subdomain;
-    if (clients[sub] || registeringSubdomains.has(sub)) {
-      socket.write(JSON.stringify({ type: 'error', message: 'Subdomain in use' }) + '\n');
-      return socket.destroy();
-    }
+  if (!apiRes.ok) {
+    const errMsg = data?.message || 'Authentication failed.';
+    socket.write(JSON.stringify({
+      type: 'error', 
+      message: errMsg
+    }) + '\n');
+    socket.end();
+    return;
+  }
 
-    registeringSubdomains.add(sub);
-    try {
-      clients[sub] = socket;
-      socket._apexRegistered = true;
-      
-      // end full account details
-      socket.write(JSON.stringify({ 
-        type: 'registered', 
+  const sub = data.subdomain;
+
+  if (!sub || typeof sub !== 'string') {
+    logger.error('API returned invalid subdomain');
+    socket.write(JSON.stringify({
+      type: 'error',
+      message: 'Invalid subdomain returned by server.'
+    }) + '\n');
+    socket.end();
+    return;
+  }
+
+  // ── Atomic subdomain claim
+  // Check both the live clients map AND the in-progress set in one block
+
+  if (clients[sub] || registeringSubdomains.has(sub)) {
+    socket.write(JSON.stringify({
+      type: 'error',
+      message: 'Subdomain already in use.'
+    }) + '\n');
+    socket.end();
+    return;
+  }
+
+  registeringSubdomains.add(sub);
+
+  try {
+    clients[sub] = socket;
+    socket._apexRegistered = true;
+
+    socket.write(
+      JSON.stringify({
+        type: 'registered',
         subdomain: sub,
         email: data.email,
-        isPremium: data.isPremium 
-      }) + '\n');
-      
-      logger.info({ sub, user: data.email }, 'New client registered');
-    } finally {
-      registeringSubdomains.delete(sub);
-    }
-  } catch (err) {
-    logger.error(`Registration failed: ${err.message}`);
-    // use destroy() to ensure the client doesn't hang on an invalid state
-    socket.destroy();
+        isPremium: data.isPremium,
+      }) + '\n',
+    );
+
+    logger.info({ sub, user: data.email }, 'New client registered');
+  } finally {
+    // Always release the lock, even if socket.write throws
+    registeringSubdomains.delete(sub);
   }
 }

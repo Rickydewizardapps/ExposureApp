@@ -11,7 +11,7 @@ import { getClientErrorPage } from './src/clientError.js';
 
 // ─── Constants────
 
-const RELAY_HOST = process.env.APEX_RELAY      ?? 'relay.apextunnel.top';
+const RELAY_HOST = process.env.APEX_RELAY      ?? 'relay.apextunnel.top.';
 const RELAY_PORT = Number(process.env.APEX_RELAY_PORT ?? '9000');
 const DEFAULT_LOCAL_PORT = 8080;
 const VERSION = '1.1.3';

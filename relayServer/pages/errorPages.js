@@ -1,10 +1,23 @@
+const escapeHtml = (str) =>
+  String(str)
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#039;');
+
+// message intentionally allows a small subset of HTML (just <b> tags from
+// our own internal callers), escape everything else but restore safe <b>.
+const safeBold = (str) =>
+  escapeHtml(str).replace(/&lt;b&gt;(.*?)&lt;\/b&gt;/g, '<b>$1</b>');
+
 export const errorPage = (code, title, message) => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${code} | ApexTunnel</title>
+    <title>${escapeHtml(code)} | ApexTunnel</title>
     <style>
         body { 
             background: #0f172a; color: #f8fafc; 
@@ -40,9 +53,9 @@ export const errorPage = (code, title, message) => `
 </head>
 <body>
     <div class="card">
-        <div class="status-code">${code}</div>
-        <h1>${title}</h1>
-        <p>${message}</p>
+        <div class="status-code">${escapeHtml(code)}</div>
+        <h1>${escapeHtml(title)}</h1>
+        <p>${safeBold(message)}</p>
         <a href="/" class="btn">Try Again</a>
         <div class="footer">ApexTunnel v1.1.3 • BraveraTech</div>
     </div>
