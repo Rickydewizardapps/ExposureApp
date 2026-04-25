@@ -13,8 +13,7 @@
   "license": "ISC",
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {
-    "nodemon": "^3.1.14",
-    "pkg": "^5.8.1"
+    "nodemon": "^3.1.14"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

@@ -4,12 +4,24 @@
 
 import fs from 'fs';
 import tls from 'tls';
+import logger from '../logger.js';
 
 export function getTlsOptions() {
   const keyPath = process.env.TLS_KEY_PATH || './key.pem';
   const certPath = process.env.TLS_CERT_PATH || './cert.pem';
 
-  if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
+  const keyExists = fs.existsSync(keyPath);
+  const certExists = fs.existsSync(certPath);
+
+  if (!keyExists || !certExists) {
+    if (process.env.TLS_DISABLED !== 'true') {
+      logger.warn({
+        keyPath,
+        certPath,
+        keyExists,
+        certExists,
+      }, 'TLS certificate files not found. Running in plaintext mode. Set TLS_DISABLED=true to suppress this warning.');
+    }
     return null;
   }
 

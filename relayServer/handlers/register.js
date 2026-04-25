@@ -2,11 +2,13 @@ import logger from '../logger.js';
 import { validateSubdomain } from '../src/security.js';
 import { encodeJson } from '../src/protocol.js';
 
-const registeringSubdomains = new Set();
+const registeringSubdomains = new Map(); // subdomain -> Promise
 
 function safeWrite(socket, data) {
   if (!socket.destroyed) {
-    try { socket.write(data); } catch {}
+    try { socket.write(data); } catch (err) {
+      logger.error({ err: err.message }, 'safeWrite failed');
+    }
   }
 }
 
@@ -66,7 +68,7 @@ export async function handleRegister(socket, msg, connectionManager, rateLimiter
     });
     data = await apiRes.json();
   } catch (err) {
-    logger.error(`Registration fetch failed: ${err.message}`);
+    logger.error({ err: err.message }, 'Registration fetch failed');
     safeWrite(socket, encodeJson({
       type: 'error',
       code: 'AUTH_UNAVAILABLE',
@@ -101,7 +103,7 @@ export async function handleRegister(socket, msg, connectionManager, rateLimiter
     return { success: false };
   }
 
-  // Atomic subdomain claim
+  // Atomic subdomain claim using promise-based lock
   if (registeringSubdomains.has(sub)) {
     safeWrite(socket, encodeJson({
       type: 'error',
@@ -112,7 +114,10 @@ export async function handleRegister(socket, msg, connectionManager, rateLimiter
     return { success: false };
   }
 
-  registeringSubdomains.add(sub);
+  // Create a promise that resolves when registration completes
+  let resolveLock;
+  const lockPromise = new Promise(resolve => { resolveLock = resolve; });
+  registeringSubdomains.set(sub, lockPromise);
 
   try {
     // Check existing connection — get() returns null if socket is dead
@@ -136,6 +141,7 @@ export async function handleRegister(socket, msg, connectionManager, rateLimiter
     }));
     return { success: true, subdomain: sub };
   } finally {
+    resolveLock();
     registeringSubdomains.delete(sub);
   }
 }

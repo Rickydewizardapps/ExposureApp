@@ -5,7 +5,7 @@ import {
   setConnecting, setOnline, setReconnecting,
   logRequest, destroyUI, uiActive, setRestartCallback,
 } from './src/cli.js';
-import { getStoredToken, saveToken } from './src/auth.js';
+import { getStoredToken, saveToken, saveSubdomain, getStoredSubdomain } from './src/auth.js';
 import { getClientErrorPage } from './src/clientError.js';
 import { TunnelConnection } from './src/connection.js';
 
@@ -16,6 +16,12 @@ const USE_TLS = process.env.APEX_TLS === 'true' || process.env.APEX_TLS === '1';
 const TLS_CA_PATH = process.env.APEX_TLS_CA || null;
 const DEFAULT_LOCAL_PORT = 8080;
 const VERSION = '2.0.0';
+
+// ─── Validate RELAY_PORT
+if (!Number.isInteger(RELAY_PORT) || RELAY_PORT < 1 || RELAY_PORT > 65535) {
+  console.error('\x1b[31m✖\x1b[0m Invalid APEX_RELAY_PORT value. Must be 1–65535.');
+  process.exit(1);
+}
 
 // ─── Help
 const HELP = `
@@ -38,6 +44,7 @@ const HELP = `
    APEX_RELAY_PORT  Relay port (default: 9000)
    APEX_TLS         Enable TLS on tunnel (default: false)
    APEX_TLS_CA      Path to CA certificate for self-signed TLS
+   APEX_LOCAL_HOST  Local app hostname (default: localhost)
 `.trimStart();
 
 // ─── Command Routing
@@ -85,6 +92,11 @@ if (cmd === 'status') {
 
 if (cmd !== 'http') {
   console.error(`\x1b[31m✖\x1b[0m Unknown command: "${cmd}". Run: apex help`);
+  console.error('\n\x1b[36mAvailable commands:\x1b[0m');
+  console.error('  http <port> [--subdomain <name>]');
+  console.error('  authtoken <token>');
+  console.error('  status');
+  console.error('  help');
   process.exit(1);
 }
 
@@ -105,11 +117,6 @@ if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) {
   process.exit(1);
 }
 
-if (!Number.isInteger(RELAY_PORT) || RELAY_PORT < 1 || RELAY_PORT > 65535) {
-  console.error('\x1b[31m✖\x1b[0m Invalid APEX_RELAY_PORT value.');
-  process.exit(1);
-}
-
 const token = getStoredToken();
 if (!token) {
   console.error('\x1b[31m✖\x1b[0m No auth token found. Run: apex authtoken <token>');
@@ -118,6 +125,7 @@ if (!token) {
 
 // ─── State
 const activeRequests = new Map();
+const LOCAL_HOST = process.env.APEX_LOCAL_HOST || 'localhost';
 
 // ─── Bootstrap
 setConnecting(String(localPort));
@@ -126,11 +134,14 @@ const tunnel = new TunnelConnection({
   host: RELAY_HOST,
   port: RELAY_PORT,
   token,
-  subdomain: values.subdomain,
+  subdomain: values.subdomain || getStoredSubdomain() || '',
   localPort,
   useTls: USE_TLS,
   caPath: TLS_CA_PATH,
   onRegistered: (info) => {
+    if (info.subdomain) {
+      saveSubdomain(info.subdomain);
+    }
     setOnline({ ...info, port: String(localPort) });
   },
   onError: (err) => {
@@ -151,7 +162,10 @@ const tunnel = new TunnelConnection({
       const req = activeRequests.get(msg.id);
       if (req && !req.bodyComplete) {
         if (req.localReq) {
-          req.localReq.write(msg.data);
+          const writable = req.localReq.write(msg.data);
+          if (!writable) {
+            req.paused = true;
+          }
         } else {
           req.earlyChunks.push(msg.data);
         }
@@ -187,6 +201,7 @@ function proxyRequest(msg) {
     bodyComplete: !msg.bodyExpected,
     localReq: null,
     earlyChunks: [],
+    paused: false,
   };
   activeRequests.set(msg.id, reqState);
 
@@ -203,14 +218,14 @@ function proxyRequest(msg) {
       headers[key] = val;
     }
   }
-  headers['host'] = `localhost:${localPort}`;
+  headers['host'] = `${LOCAL_HOST}:${localPort}`;
 
   const safePath = typeof msg.url === 'string' && msg.url.startsWith('/')
     ? msg.url
     : '/';
 
   const localReq = http.request({
-    hostname: '127.0.0.1',
+    hostname: LOCAL_HOST,
     port: localPort,
     path: safePath,
     method: msg.method,
@@ -239,7 +254,8 @@ function proxyRequest(msg) {
       activeRequests.delete(msg.id);
     });
 
-    localRes.on('error', () => {
+    localRes.on('error', (err) => {
+      console.error(`[PROXY] Response error: ${err.message}`);
       tunnel.sendResponseStart(msg.id, 502, { 'content-type': 'text/html' }, false);
       clearTimeout(reqState.timeout);
       activeRequests.delete(msg.id);
@@ -248,9 +264,16 @@ function proxyRequest(msg) {
 
   reqState.localReq = localReq;
 
+  localReq.on('drain', () => {
+    reqState.paused = false;
+  });
+
   if (reqState.earlyChunks.length > 0) {
     for (const chunk of reqState.earlyChunks) {
-      localReq.write(chunk);
+      const writable = localReq.write(chunk);
+      if (!writable) {
+        reqState.paused = true;
+      }
     }
   }
 
@@ -258,7 +281,9 @@ function proxyRequest(msg) {
     localReq.end();
   }
 
-  localReq.on('error', () => {
+  localReq.on('error', (err) => {
+    console.error(`[PROXY ERROR] ${msg.method} ${safePath} -> ${LOCAL_HOST}:${localPort}: ${err.message}`);
+    try { localReq.destroy(); } catch {}
     const html = getClientErrorPage(localPort);
     tunnel.sendResponseStart(msg.id, 502, {
       'content-type': 'text/html',

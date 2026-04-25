@@ -80,3 +80,23 @@
 - Multi-client
 - Terminal UI with live request log
 - Binary executable
+
+
+## [2.0.1] — 2026-04-25
+
+### Critical Fixes
+- **Fixed unhandled error in local HTTP proxy** — client.js now properly destroys localReq and cleans up activeRequests on error
+- **Fixed silent catch blocks in connection.js** — all socket.write calls now log errors instead of silently swallowing them
+- **Fixed race condition in subdomain registration** — replaced Set-based lock with promise-based lock in register.js
+
+### Medium Fixes
+- **Added JWT format validation** — auth.js now validates JWT structure (3 base64url segments) or API key format
+- **Added port validation** — client.js validates APEX_RELAY_PORT is integer 1-65535 before use
+- **Added TLS warning** — tls.js logs warning when cert files are missing instead of silently disabling TLS
+- **Added backpressure handling** — client.js proxyRequest checks write() return value and handles drain events
+
+### Low Fixes
+- **Replaced Date.now() with performance.now()** — relay.js uses high-resolution timing for request metrics
+- **Improved unknown command UX** — client.js shows available commands list on unknown command
+- **Standardized error logging** — relay.js uses structured logging consistently across all error handlers
+- **Added inline comments** — documented request lifecycle and error handling in relay.js

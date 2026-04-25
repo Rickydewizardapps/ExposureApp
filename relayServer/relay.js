@@ -22,13 +22,13 @@ const TCP_PORT = Number(process.env.TCP_PORT) || 9000;
 const HTTP_PORT = Number(process.env.HTTP_PORT) || 2000;
 const METRICS_PORT = Number(process.env.METRICS_PORT) || 9090;
 const REQUEST_TIMEOUT_MS = 30000;
-const MAX_BODY_SIZE = 100 * 1024 * 1024;
-const MAX_REQUEST_HEADERS_SIZE = 64 * 1024;
+const MAX_BODY_SIZE = 100 * 1024 * 1024; // 100MB
+const MAX_REQUEST_HEADERS_SIZE = 64 * 1024; // 64KB
 const MAX_CONCURRENT_REQUESTS = 1000;
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 
 // ─── State
-const pendingRequests = new Map();
+const pendingRequests = new Map(); // requestId -> {res, timer, tunnelSocket, responseStarted, startTime, method}
 const connectionManager = new ConnectionManager({ logger });
 const httpRateLimiter = new RateLimiter({ windowMs: 60000, maxRequests: 120, keyPrefix: 'http:' });
 const registerRateLimiter = new RateLimiter({ windowMs: 60000, maxRequests: 10, keyPrefix: 'reg:' });
@@ -45,7 +45,9 @@ const sendError = (res, status, title, message) => {
   try {
     res.writeHead(status, { 'Content-Type': 'text/html' });
     res.end(errorPage(status, title, message));
-  } catch {}
+  } catch (err) {
+    logger.error({ err: err.message, status }, 'Failed to send error response');
+  }
 };
 
 function cleanupRequest(id) {
@@ -85,7 +87,7 @@ function handleResponseStart(msg) {
 
     if (!msg.bodyExpected) {
       pending.res.end();
-      recordRequestMetrics(pending.method || 'GET', msg.statusCode || 502, (Date.now() - pending.startTime) / 1000);
+      recordRequestMetrics(pending.method || 'GET', msg.statusCode || 502, (performance.now() - pending.startTime) / 1000);
       pendingRequests.delete(msg.id);
     }
   } catch (err) {
@@ -114,8 +116,10 @@ function handleBodyEnd(requestId) {
     if (!pending.res.writableEnded) {
       pending.res.end();
     }
-    recordRequestMetrics(pending.method || 'GET', pending.statusCode || 200, (Date.now() - pending.startTime) / 1000);
-  } catch {}
+    recordRequestMetrics(pending.method || 'GET', pending.statusCode || 200, (performance.now() - pending.startTime) / 1000);
+  } catch (err) {
+    logger.error({ err: err.message, requestId }, 'Error ending response');
+  }
   pendingRequests.delete(requestId);
 }
 
@@ -126,7 +130,7 @@ function createTcpConnectionHandler(socket) {
   let registered = false;
   const bp = new BackpressureController(socket, MAX_BUFFERED_BYTES);
 
-  // Registration timeout
+  // Registration timeout — drop if not registered within 15s
   const regTimeout = setTimeout(() => {
     if (!registered) {
       logger.warn({ remote: socket.remoteAddress }, 'Client timed out before registering');
@@ -136,7 +140,10 @@ function createTcpConnectionHandler(socket) {
 
   parser.onFrame = async (type, payload) => {
     if (type === FRAME_TYPES.PING) {
-      try { bp.write(encodePong()); } catch {}
+      // Client sent unsolicited ping — respond with pong
+      try { bp.write(encodePong()); } catch (err) {
+        logger.error({ err: err.message }, 'Failed to send pong');
+      }
       return;
     }
 
@@ -203,13 +210,13 @@ if (tlsOptions) {
   logger.info('TLS enabled for TCP tunnel');
 } else {
   tcpServer = net.createServer(createTcpConnectionHandler);
-  logger.warn('TLS NOT enabled for TCP tunnel — running in plaintext!');
+  logger.info('TLS NOT enabled for TCP tunnel — running in plaintext');
 }
 
 // ─── HTTP Server (browser requests)
 const httpServer = http.createServer((req, res) => {
   const clientIp = getClientIp(req);
-  const startTime = Date.now();
+  const startTime = performance.now();
 
   // Rate limit by IP
   const limit = httpRateLimiter.isAllowed(clientIp);
@@ -311,12 +318,14 @@ const httpServer = http.createServer((req, res) => {
     cleanupRequest(requestId);
   });
 
+  // Browser disconnects before response completes
   res.on('close', () => {
     if (!res.writableEnded) {
       cleanupRequest(requestId);
     }
   });
 
+  // Timeout if client never responds
   const timer = setTimeout(() => {
     const pending = pendingRequests.get(requestId);
     if (pending) {

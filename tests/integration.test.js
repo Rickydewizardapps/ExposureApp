@@ -10,6 +10,7 @@ const execAsync = promisify(exec);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
+// ─── Helpers ───
 function wait(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
@@ -67,74 +68,6 @@ function portReady(port, host = '127.0.0.1', timeout = 10000) {
   });
 }
 
-function spawnAndWait(cmd, args, opts, readySignal, timeout = 15000) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args, opts);
-    const stdout = [];
-    const stderr = [];
-    let resolved = false;
-
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        proc.kill('SIGKILL');
-        reject(new Error(
-          `Process timed out after ${timeout}ms.\n` +
-          `Command: ${cmd} ${args.join(' ')}\n` +
-          `STDOUT: ${stdout.join('')}\n` +
-          `STDERR: ${stderr.join('')}`
-        ));
-      }
-    }, timeout);
-
-    proc.stdout.on('data', (data) => {
-      const text = data.toString();
-      stdout.push(text);
-      if (!resolved && readySignal && text.includes(readySignal)) {
-        resolved = true;
-        clearTimeout(timer);
-        resolve(proc);
-      }
-    });
-
-    proc.stderr.on('data', (data) => {
-      stderr.push(data.toString());
-    });
-
-    proc.on('error', (err) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        reject(new Error(
-          `Process failed to start: ${err.message}\n` +
-          `STDERR: ${stderr.join('')}`
-        ));
-      }
-    });
-
-    proc.on('exit', (code) => {
-      if (!resolved && code !== null && code !== 0) {
-        resolved = true;
-        clearTimeout(timer);
-        reject(new Error(
-          `Process exited with code ${code}.\n` +
-          `STDOUT: ${stdout.join('')}\n` +
-          `STDERR: ${stderr.join('')}`
-        ));
-      }
-    });
-
-    if (!readySignal) {
-      setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timer);
-          resolve(proc);
-        }
-      }, 500);
-    }
-  });
-}
-
 async function killZombiesOnPort(port) {
   try {
     const { stdout } = await execAsync(`lsof -ti:${port} 2>/dev/null || true`);
@@ -145,6 +78,7 @@ async function killZombiesOnPort(port) {
   } catch {}
 }
 
+// ─── Mock Auth API ───
 function startMockAuth(port) {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
@@ -174,6 +108,7 @@ function startMockAuth(port) {
   });
 }
 
+// ─── Mock Local App ───
 function startLocalApp(port) {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
@@ -219,6 +154,23 @@ function startLocalApp(port) {
   });
 }
 
+async function waitForClientConnected(metricsPort, timeout = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      const res = await httpRequest({
+        hostname: '127.0.0.1', port: metricsPort, path: '/health',
+      });
+      if (res.status === 200) {
+        const json = JSON.parse(res.body.toString());
+        if (json.activeConnections >= 1) return json;
+      }
+    } catch {}
+    await wait(300);
+  }
+  throw new Error(`Client never connected after ${timeout}ms`);
+}
+
 describe('Local Integration Test', () => {
   let AUTH_PORT;
   let RELAY_TCP_PORT;
@@ -249,17 +201,16 @@ describe('Local Integration Test', () => {
     localApp = await startLocalApp(LOCAL_APP_PORT);
     await portReady(LOCAL_APP_PORT);
 
+    // Save token
     const token = 'test_token_1234567890123456789012345678901234567890';
-    await spawnAndWait(
-      'node', ['client.js', 'authtoken', token],
-      {
-        cwd: path.join(ROOT, 'clientServer'),
-        env: { ...process.env, APEX_RELAY: '127.0.0.1', APEX_RELAY_PORT: String(RELAY_TCP_PORT) },
-      },
-      'Authtoken saved', 10000
-    );
+    const tokenProc = spawn('node', ['client.js', 'authtoken', token], {
+      cwd: path.join(ROOT, 'clientServer'),
+      env: { ...process.env, APEX_RELAY: '127.0.0.1', APEX_RELAY_PORT: String(RELAY_TCP_PORT) },
+      stdio: 'pipe',
+    });
+    await new Promise(r => tokenProc.on('close', r));
 
-    // Start relay — use portReady instead of log line since LOG_LEVEL may suppress it
+    // Start relay
     relayProc = spawn('node', ['relay.js'], {
       cwd: path.join(ROOT, 'relayServer'),
       env: {
@@ -269,6 +220,8 @@ describe('Local Integration Test', () => {
         TCP_PORT: String(RELAY_TCP_PORT),
         HTTP_PORT: String(RELAY_HTTP_PORT),
         METRICS_PORT: String(METRICS_PORT),
+        LOG_LEVEL: 'fatal',
+        TLS_DISABLED: 'true',
       },
       stdio: 'pipe',
     });
@@ -277,6 +230,7 @@ describe('Local Integration Test', () => {
     await portReady(RELAY_HTTP_PORT);
     await portReady(METRICS_PORT);
 
+    // Start client
     clientProc = spawn('node', ['client.js', 'http', String(LOCAL_APP_PORT), '--subdomain', 'test-local'], {
       cwd: path.join(ROOT, 'clientServer'),
       env: {
@@ -287,8 +241,9 @@ describe('Local Integration Test', () => {
       stdio: 'pipe',
     });
 
-    await portReady(RELAY_TCP_PORT);
-    await wait(1000);
+    // Wait for client to actually register
+    const health = await waitForClientConnected(METRICS_PORT, 15000);
+    console.log('Client connected:', health);
   }, 60000);
 
   afterAll(async () => {
@@ -342,7 +297,7 @@ describe('Local Integration Test', () => {
     expect(res.status).toBe(200);
     expect(res.body.length).toBe(1024 * 1024);
     expect(res.body[0]).toBe('x'.charCodeAt(0));
-  });
+  }, 15000);
 
   it('returns 404 for disconnected subdomain', async () => {
     const res = await httpRequest({

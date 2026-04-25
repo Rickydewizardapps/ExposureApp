@@ -104,7 +104,6 @@ export class TunnelConnection {
     }
 
     if (type === FRAME_TYPES.PONG) {
-      // Server acknowledged our keepalive
       return;
     }
 
@@ -153,7 +152,8 @@ export class TunnelConnection {
       }
       try {
         this.socket.write(encodePong());
-      } catch {
+      } catch (err) {
+        this.logger.error('Heartbeat write failed:', err.message);
         this._reconnect();
       }
     }, 25000);
@@ -163,7 +163,9 @@ export class TunnelConnection {
     if (!this.socket || this.socket.destroyed) return;
     try {
       this.socket.write(encodePong());
-    } catch {}
+    } catch (err) {
+      this.logger.error('Pong write failed:', err.message);
+    }
   }
 
   _clearHeartbeat() {
@@ -177,7 +179,6 @@ export class TunnelConnection {
     this._clearHeartbeat();
     this.onError?.({ type: 'reconnecting', delay: this.reconnectDelay });
 
-    // Add jitter to prevent thundering herd
     const jitter = Math.random() * 1000;
     const delay = this.reconnectDelay + jitter;
 
@@ -196,28 +197,36 @@ export class TunnelConnection {
         headers,
         bodyExpected,
       }));
-    } catch {}
+    } catch (err) {
+      this.logger.error('sendResponseStart failed:', err.message);
+    }
   }
 
   sendBodyChunk(requestId, data) {
     if (!this.socket || this.socket.destroyed) return;
     try {
       this.socket.write(encodeBodyChunk(requestId, data));
-    } catch {}
+    } catch (err) {
+      this.logger.error('sendBodyChunk failed:', err.message);
+    }
   }
 
   sendBodyEnd(requestId) {
     if (!this.socket || this.socket.destroyed) return;
     try {
       this.socket.write(encodeBodyEnd(requestId));
-    } catch {}
+    } catch (err) {
+      this.logger.error('sendBodyEnd failed:', err.message);
+    }
   }
 
   disconnect() {
     this.intentionalClose = true;
     this._clearHeartbeat();
     if (this.socket) {
-      try { this.socket.destroy(); } catch {}
+      try { this.socket.destroy(); } catch (err) {
+        this.logger.error('Socket destroy failed:', err.message);
+      }
     }
   }
 }
