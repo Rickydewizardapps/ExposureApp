@@ -4,11 +4,9 @@ node_modules/
 .pnp.js
 
 # --- Environment / Secrets ---
-*.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env
+.env.*
+!.env.example
 *.pem
 apex_identity.p12
 
@@ -31,7 +29,6 @@ yarn-error.log*
 .idea/
 dist/
 build/
-
 
 # Build outputs
 clientServer/dist/

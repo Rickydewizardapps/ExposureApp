@@ -1,63 +1,39 @@
 const escapeHtml = (str) =>
   String(str)
-    .replace(/&/g,  '&amp;')
-    .replace(/</g,  '&lt;')
-    .replace(/>/g,  '&gt;')
-    .replace(/"/g,  '&quot;')
-    .replace(/'/g,  '&#039;');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 
-// message intentionally allows a small subset of HTML (just <b> tags from
-// our own internal callers), escape everything else but restore safe <b>.
+// Restore <b> tags from trusted internal callers after escaping
 const safeBold = (str) =>
   escapeHtml(str).replace(/&lt;b&gt;(.*?)&lt;\/b&gt;/g, '<b>$1</b>');
 
-export const errorPage = (code, title, message) => `
-<!DOCTYPE html>
+export const errorPage = (code, title, message) => `<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${escapeHtml(code)} | ApexTunnel</title>
-    <style>
-        body { 
-            background: #0f172a; color: #f8fafc; 
-            font-family: 'Inter', system-ui, -apple-system, sans-serif; 
-            display: flex; align-items: center; justify-content: center; 
-            height: 100vh; margin: 0; text-align: center; 
-        }
-        .card { 
-            padding: 3rem; border: 1px solid #1e293b; border-radius: 24px; 
-            background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); 
-            max-width: 480px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-        }
-        .status-code {
-            font-size: 5rem; font-weight: 900; margin: 0;
-            background: linear-gradient(to bottom, #38bdf8, #1d4ed8);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-            line-height: 1; opacity: 0.8;
-        }
-        h1 { font-size: 1.8rem; margin: 1rem 0 0.5rem; color: #f8fafc; font-weight: 800; }
-        p { color: #94a3b8; line-height: 1.6; margin-bottom: 2.5rem; font-size: 1.1rem; }
-        b { color: #38bdf8; }
-        .btn { 
-            background: #38bdf8; color: #0f172a; padding: 0.8rem 2rem; 
-            border-radius: 12px; text-decoration: none; font-weight: 700; 
-            transition: all 0.2s; display: inline-block;
-        }
-        .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(56, 189, 248, 0.4); }
-        .footer { 
-            margin-top: 3rem; font-size: 0.7rem; color: #475569; 
-            letter-spacing: 2px; text-transform: uppercase; font-weight: 600;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(code)} | ApexTunnel</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 80px auto; padding: 0 20px; color: #333; background: #fafafa; }
+    h1 { font-size: 72px; margin: 0; color: #e74c3c; }
+    h2 { margin-top: 10px; color: #555; font-weight: 500; }
+    p { line-height: 1.6; color: #666; }
+    a { color: #3498db; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .container { text-align: center; }
+    .footer { margin-top: 40px; font-size: 12px; color: #999; }
+  </style>
 </head>
 <body>
-    <div class="card">
-        <div class="status-code">${escapeHtml(code)}</div>
-        <h1>${escapeHtml(title)}</h1>
-        <p>${safeBold(message)}</p>
-        <a href="/" class="btn">Try Again</a>
-        <div class="footer">ApexTunnel v1.1.3 • BraveraTech</div>
-    </div>
+  <div class="container">
+    <h1>${escapeHtml(code)}</h1>
+    <h2>${escapeHtml(title)}</h2>
+    <p>${safeBold(message)}</p>
+    <p><a href="/">Try Again</a></p>
+    <p class="footer">ApexTunnel v2.0 • BraveraTech</p>
+  </div>
 </body>
 </html>`;

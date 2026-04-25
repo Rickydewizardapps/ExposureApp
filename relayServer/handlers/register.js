@@ -1,27 +1,62 @@
 import logger from '../logger.js';
-
-// Tracks subdomains mid-registration to prevent race conditions.
+import { validateSubdomain } from '../src/security.js';
+import { encodeJson } from '../src/protocol.js';
 
 const registeringSubdomains = new Set();
 
-export async function handleRegister(socket, msg, clients) {
-  const token = msg.token?.trim();
+function safeWrite(socket, data) {
+  if (!socket.destroyed) {
+    try { socket.write(data); } catch {}
+  }
+}
 
+export async function handleRegister(socket, msg, connectionManager, rateLimiter) {
+  const clientIp = socket.remoteAddress || 'unknown';
+
+  // Rate limit registration attempts
+  const limit = rateLimiter.isAllowed(clientIp);
+  if (!limit.allowed) {
+    safeWrite(socket, encodeJson({
+      type: 'error',
+      code: 'RATE_LIMITED',
+      message: `Too many registration attempts. Retry after ${limit.retryAfter}s.`,
+    }));
+    socket.end();
+    return { success: false };
+  }
+
+  // Protocol version check
+  if (msg.version !== '2.0') {
+    safeWrite(socket, encodeJson({
+      type: 'error',
+      code: 'VERSION_MISMATCH',
+      message: 'Protocol version mismatch. Please update your client to v2.0.',
+    }));
+    socket.end();
+    return { success: false };
+  }
+
+  const token = msg.token?.trim();
   if (!token) {
-    socket.write(JSON.stringify({ type: 'error',
-      message: 'Token required.' 
-    }) + '\n');
-    socket.end(); // drain the write before closing
-    return;
+    safeWrite(socket, encodeJson({
+      type: 'error',
+      code: 'TOKEN_REQUIRED',
+      message: 'Authentication token required.'
+    }));
+    socket.end();
+    return { success: false };
   }
 
   let apiRes, data;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
 
   try {
     apiRes = await fetch(`${process.env.API_URL}/internal/tunnel/connected`, {
-      method:  'POST',
+      method: 'POST',
+      signal: controller.signal,
       headers: {
-        'Content-Type':      'application/json',
+        'Content-Type': 'application/json',
         'x-internal-secret': process.env.INTERNAL_SECRET,
       },
       body: JSON.stringify({
@@ -29,70 +64,78 @@ export async function handleRegister(socket, msg, clients) {
         subdomain: msg.subdomain?.trim() || '',
       }),
     });
-
     data = await apiRes.json();
   } catch (err) {
     logger.error(`Registration fetch failed: ${err.message}`);
-    socket.write(JSON.stringify({
-      type: 'error', 
-      message: 'Could not reach auth service.'
-    }) + '\n');
+    safeWrite(socket, encodeJson({
+      type: 'error',
+      code: 'AUTH_UNAVAILABLE',
+      message: 'Could not reach authentication service.'
+    }));
     socket.end();
-    return;
+    return { success: false };
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (!apiRes.ok) {
     const errMsg = data?.message || 'Authentication failed.';
-    socket.write(JSON.stringify({
-      type: 'error', 
+    safeWrite(socket, encodeJson({
+      type: 'error',
+      code: 'AUTH_FAILED',
       message: errMsg
-    }) + '\n');
+    }));
     socket.end();
-    return;
+    return { success: false };
   }
 
   const sub = data.subdomain;
-
-  if (!sub || typeof sub !== 'string') {
+  if (!sub || typeof sub !== 'string' || !validateSubdomain(sub)) {
     logger.error('API returned invalid subdomain');
-    socket.write(JSON.stringify({
+    safeWrite(socket, encodeJson({
       type: 'error',
+      code: 'INVALID_SUBDOMAIN',
       message: 'Invalid subdomain returned by server.'
-    }) + '\n');
+    }));
     socket.end();
-    return;
+    return { success: false };
   }
 
-  // ── Atomic subdomain claim
-  // Check both the live clients map AND the in-progress set in one block
-
-  if (clients[sub] || registeringSubdomains.has(sub)) {
-    socket.write(JSON.stringify({
+  // Atomic subdomain claim
+  if (registeringSubdomains.has(sub)) {
+    safeWrite(socket, encodeJson({
       type: 'error',
-      message: 'Subdomain already in use.'
-    }) + '\n');
+      code: 'SUBDOMAIN_IN_USE',
+      message: 'Subdomain already in use. Retrying...'
+    }));
     socket.end();
-    return;
+    return { success: false };
   }
 
   registeringSubdomains.add(sub);
 
   try {
-    clients[sub] = socket;
-    socket._apexRegistered = true;
+    // Check existing connection — get() returns null if socket is dead
+    const existing = connectionManager.get(sub);
+    if (existing) {
+      safeWrite(socket, encodeJson({
+        type: 'error',
+        code: 'SUBDOMAIN_IN_USE',
+        message: 'Subdomain already in use.'
+      }));
+      socket.end();
+      return { success: false };
+    }
 
-    socket.write(
-      JSON.stringify({
-        type: 'registered',
-        subdomain: sub,
-        email: data.email,
-        isPremium: data.isPremium,
-      }) + '\n',
-    );
-
-    logger.info({ sub, user: data.email }, 'New client registered');
+    connectionManager.register(sub, socket);
+    safeWrite(socket, encodeJson({
+      type: 'registered',
+      subdomain: sub,
+      email: data.email,
+      isPremium: data.isPremium,
+    }));
+    return { success: true, subdomain: sub };
   } finally {
-    // Always release the lock, even if socket.write throws
     registeringSubdomains.delete(sub);
   }
 }

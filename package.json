@@ -1,0 +1,15 @@
+{
+  "name": "apextunnel",
+  "version": "2.0.0",
+  "description": "Self-hosted reverse tunnel with streaming, TLS, and rate limiting",
+  "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "relay": "cd relayServer && pnpm dev",
+    "client": "cd clientServer && pnpm dev"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}

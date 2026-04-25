@@ -1,201 +1,375 @@
 import net from 'net';
+import tls from 'tls';
 import http from 'http';
 import crypto from 'crypto';
 import 'dotenv/config';
 import logger from './logger.js';
 import { handleRegister } from './handlers/register.js';
 import { errorPage } from './pages/errorPages.js';
+import {
+  ProtocolParser, FRAME_TYPES,
+  encodeJson, encodeRequestStart, encodeBodyChunk, encodeBodyEnd, encodePong
+} from './src/protocol.js';
+import { ConnectionManager } from './src/connectionManager.js';
+import { RateLimiter } from './src/rateLimiter.js';
+import { getClientIp, sanitizeHeaders, escapeHtml } from './src/security.js';
+import { metrics } from './src/metrics.js';
+import { BackpressureController } from './src/backpressure.js';
+import { getTlsOptions, createSecureServer } from './src/tls.js';
 
-// contants
-const clients = {};
-const pendingRequests = {};
-const TCP_PORT = Number(process.env.TCP_PORT)  || 9000;
+// ─── Config
+const TCP_PORT = Number(process.env.TCP_PORT) || 9000;
 const HTTP_PORT = Number(process.env.HTTP_PORT) || 2000;
-const REQUEST_TIMEOUT_MS = 30000
-const BUFFER_LIMIT = 32 * 1024 * 1024; // 32 MB per socket
+const METRICS_PORT = Number(process.env.METRICS_PORT) || 9090;
+const REQUEST_TIMEOUT_MS = 30000;
+const MAX_BODY_SIZE = 100 * 1024 * 1024;
+const MAX_REQUEST_HEADERS_SIZE = 64 * 1024;
+const MAX_CONCURRENT_REQUESTS = 1000;
+const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 
-// ─── Hop-by-hop headers that must never be forwarded
-const HOP_BY_HOP = new Set([
-  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
-  'te', 'trailers', 'transfer-encoding', 'upgrade',
-]);
+// ─── State
+const pendingRequests = new Map();
+const connectionManager = new ConnectionManager({ logger });
+const httpRateLimiter = new RateLimiter({ windowMs: 60000, maxRequests: 120, keyPrefix: 'http:' });
+const registerRateLimiter = new RateLimiter({ windowMs: 60000, maxRequests: 10, keyPrefix: 'reg:' });
 
-// ─── Helper: send a branded HTML error response
+// ─── Metrics helpers
+function recordRequestMetrics(method, statusCode, duration) {
+  metrics.inc('apex_requests_total', { method, status: String(statusCode) });
+  metrics.observe('apex_request_duration_seconds', { method }, duration);
+}
+
+// ─── Helpers
 const sendError = (res, status, title, message) => {
-  if (res.writableEnded) return;
+  if (res.writableEnded || res.headersSent) return;
   try {
     res.writeHead(status, { 'Content-Type': 'text/html' });
     res.end(errorPage(status, title, message));
-  } catch (_) {}
+  } catch {}
 };
 
-// ─── Cleanup a disconnected TCP socket
-function cleanupSocket(socket) {
-  if (socket._apexCleaned) return;
-  socket._apexCleaned = true;
-
-  const subdomain = Object.keys(clients).find((k) => clients[k] === socket);
-  if (subdomain) {
-    delete clients[subdomain];
-    logger.info({ subdomain }, 'Tunnel disconnected');
+function cleanupRequest(id) {
+  const pending = pendingRequests.get(id);
+  if (pending) {
+    clearTimeout(pending.timer);
+    pendingRequests.delete(id);
   }
+}
 
-  // Fail any in-flight requests that were waiting on this socket
-  for (const [id, pending] of Object.entries(pendingRequests)) {
+function cleanupPendingRequests(socket) {
+  for (const [id, pending] of pendingRequests) {
     if (pending.tunnelSocket === socket) {
       clearTimeout(pending.timer);
-      sendError(pending.res, 502, 'Tunnel Disconnected',
-        'The connection to the Apex Client was lost mid-request.');
-      delete pendingRequests[id];
+      sendError(pending.res, 502, 'Tunnel Disconnected', 'The connection to the client was lost.');
+      pendingRequests.delete(id);
     }
   }
 }
 
-// ─── TCP Server (client connections)
-const tcpServer = net.createServer((socket) => {
-  socket.setNoDelay(true);
-  let buffer = '';
+// ─── Handle Response frames from Client
+function handleResponseStart(msg) {
+  const pending = pendingRequests.get(msg.id);
+  if (!pending) return;
 
-  // If a client connects but never registers, drop it after 10s
-  const regTimeout = setTimeout(() => {
-    if (!socket._apexRegistered) {
-      logger.warn({ remote: socket.remoteAddress }, 'Client timed out before registering');
-      socket.destroy();
-    }
-  }, 10000);
+  clearTimeout(pending.timer);
 
-  socket.on('data', (chunk) => {
-    buffer += chunk.toString();
-
-    // Guard against a runaway client flooding the buffer
-    if (buffer.length > BUFFER_LIMIT) {
-      logger.warn({ remote: socket.remoteAddress }, 'Buffer limit exceeded, dropping socket');
-      socket.destroy();
-      return;
-    }
-
-    const messages = buffer.split('\n');
-    buffer = messages.pop(); // keep incomplete trailing data
-
-    for (const raw of messages) {
-      if (!raw.trim()) continue;
-
-      let msg;
-      try { msg = JSON.parse(raw); } catch { continue; }
-
-      if (!msg || typeof msg !== 'object' || Array.isArray(msg)) continue;
-
-      // ── Registration
-      if (msg.type === 'register') {
-        clearTimeout(regTimeout);
-        handleRegister(socket, msg, clients);
-        continue;
-      }
-
-      // ── Client response to a forwarded request
-      if (msg.type === 'response') {
-        const pending = pendingRequests[msg.id];
-        if (!pending) continue;
-
-        clearTimeout(pending.timer);
-        delete pendingRequests[msg.id];
-
-        if (pending.res.writableEnded) continue;
-
-        try {
-          const bodyBuffer = msg.body ? Buffer.from(msg.body, 'base64') : Buffer.alloc(0);
-
-          // Strip hop-by-hop headers before forwarding back to the browser
-          const headers = {};
-          for (const [key, val] of Object.entries(msg.headers ?? {})) {
-            if (!HOP_BY_HOP.has(key.toLowerCase())) {
-              headers[key] = val;
-            }
-          }
-          headers['content-length'] = String(bodyBuffer.length);
-
-          pending.res.writeHead(msg.statusCode ?? 502, headers);
-          pending.res.end(bodyBuffer);
-        } catch (err) {
-          logger.error(`Error writing response: ${err.message}`);
-        }
-      }
-    }
-  });
-
-  socket.on('end',   () => cleanupSocket(socket));
-  socket.on('error', (err) => {
-    logger.error(`TCP error: ${err.message}`);
-    cleanupSocket(socket);
-  });
-});
-
-// ─── HTTP Server 
-const httpServer = http.createServer((req, res) => {
-  const host       = req.headers['x-forwarded-host'] || req.headers.host || '';
-  const subdomain  = host.split('.')[0];
-  const tunnelSocket = clients[subdomain];
-
-  if (!tunnelSocket || tunnelSocket.destroyed) {
-    sendError(res, 404, 'No Tunnel Found',
-      `The subdomain <b>${escapeHtml(subdomain)}</b> is not connected to a client.`);
+  if (pending.res.writableEnded || pending.res.headersSent) {
+    pendingRequests.delete(msg.id);
     return;
   }
 
-  // Handle an aborted/errored incoming request gracefully
-  req.on('error', (err) => {
-    logger.warn(`Incoming request error: ${err.message}`);
-    sendError(res, 400, 'Bad Request', 'The request could not be read.');
-  });
+  try {
+    const headers = sanitizeHeaders(msg.headers || {});
+    pending.res.writeHead(msg.statusCode || 502, headers);
+    pending.responseStarted = true;
 
-  const bodyChunks = [];
-  req.on('data', (chunk) => bodyChunks.push(chunk));
-  req.on('end',  () => {
-    // Re-check socket — it may have disconnected while we were reading the body
-    if (tunnelSocket.destroyed) {
-      sendError(res, 502, 'Tunnel Disconnected', 'The client disconnected before the request could be forwarded.');
+    if (!msg.bodyExpected) {
+      pending.res.end();
+      recordRequestMetrics(pending.method || 'GET', msg.statusCode || 502, (Date.now() - pending.startTime) / 1000);
+      pendingRequests.delete(msg.id);
+    }
+  } catch (err) {
+    logger.error({ err: err.message, requestId: msg.id }, 'Error writing response headers');
+    pendingRequests.delete(msg.id);
+  }
+}
+
+function handleBodyChunk(requestId, data) {
+  const pending = pendingRequests.get(requestId);
+  if (!pending || !pending.responseStarted) return;
+
+  try {
+    pending.res.write(data);
+  } catch (err) {
+    logger.error({ err: err.message, requestId }, 'Error writing response body');
+    cleanupRequest(requestId);
+  }
+}
+
+function handleBodyEnd(requestId) {
+  const pending = pendingRequests.get(requestId);
+  if (!pending) return;
+
+  try {
+    if (!pending.res.writableEnded) {
+      pending.res.end();
+    }
+    recordRequestMetrics(pending.method || 'GET', pending.statusCode || 200, (Date.now() - pending.startTime) / 1000);
+  } catch {}
+  pendingRequests.delete(requestId);
+}
+
+// ─── TCP Server (client connections)
+function createTcpConnectionHandler(socket) {
+  socket.setNoDelay(true);
+  const parser = new ProtocolParser();
+  let registered = false;
+  const bp = new BackpressureController(socket, MAX_BUFFERED_BYTES);
+
+  // Registration timeout
+  const regTimeout = setTimeout(() => {
+    if (!registered) {
+      logger.warn({ remote: socket.remoteAddress }, 'Client timed out before registering');
+      socket.destroy();
+    }
+  }, 15000);
+
+  parser.onFrame = async (type, payload) => {
+    if (type === FRAME_TYPES.PING) {
+      try { bp.write(encodePong()); } catch {}
       return;
     }
 
-    const requestId  = crypto.randomUUID();
-    const bodyBase64 = Buffer.concat(bodyChunks).toString('base64');
+    if (type === FRAME_TYPES.PONG) {
+      connectionManager.handlePong(socket);
+      return;
+    }
 
-    const timer = setTimeout(() => {
-      if (pendingRequests[requestId]) {
-        sendError(pendingRequests[requestId].res, 504, 'Gateway Timeout',
-          'The tunnel is open, but your <b>local server</b> is not responding.');
-        delete pendingRequests[requestId];
+    if (type === FRAME_TYPES.JSON_CONTROL && payload?.type === 'register') {
+      clearTimeout(regTimeout);
+      const result = await handleRegister(socket, payload, connectionManager, registerRateLimiter);
+      if (result.success) {
+        registered = true;
+        metrics.inc('apex_connections_total');
+        metrics.set('apex_active_connections', {}, connectionManager.getStats().activeConnections);
       }
-    }, REQUEST_TIMEOUT_MS);
+      return;
+    }
 
-    pendingRequests[requestId] = { res, timer, tunnelSocket };
+    if (!registered) return;
 
-    // ── Forward the request to the client
-    tunnelSocket.write(
-      JSON.stringify({
-        type:    'request',
-        id:      requestId,
-        method:  req.method,
-        url:     req.url,
-        headers: req.headers,
-        body:    bodyBase64,
-      }) + '\n',
-    );
+    if (type === FRAME_TYPES.RESPONSE_START) {
+      handleResponseStart(payload);
+      return;
+    }
+
+    if (type === FRAME_TYPES.BODY_CHUNK) {
+      handleBodyChunk(payload.id, payload.data);
+      return;
+    }
+
+    if (type === FRAME_TYPES.BODY_END) {
+      handleBodyEnd(payload.id);
+      return;
+    }
+  };
+
+  parser.onError = (err) => {
+    logger.error({ err: err.message, remote: socket.remoteAddress }, 'Protocol error');
+    socket.destroy();
+  };
+
+  socket.on('data', (chunk) => parser.feed(chunk));
+
+  socket.on('end', () => {
+    connectionManager.unregister(socket);
+    cleanupPendingRequests(socket);
+    metrics.set('apex_active_connections', {}, connectionManager.getStats().activeConnections);
+  });
+
+  socket.on('error', (err) => {
+    logger.error({ err: err.message, remote: socket.remoteAddress }, 'TCP socket error');
+    connectionManager.unregister(socket);
+    cleanupPendingRequests(socket);
+    metrics.set('apex_active_connections', {}, connectionManager.getStats().activeConnections);
+  });
+}
+
+// ─── Choose TLS or plain TCP
+const tlsOptions = getTlsOptions();
+let tcpServer;
+if (tlsOptions) {
+  tcpServer = createSecureServer(tlsOptions, createTcpConnectionHandler);
+  logger.info('TLS enabled for TCP tunnel');
+} else {
+  tcpServer = net.createServer(createTcpConnectionHandler);
+  logger.warn('TLS NOT enabled for TCP tunnel — running in plaintext!');
+}
+
+// ─── HTTP Server (browser requests)
+const httpServer = http.createServer((req, res) => {
+  const clientIp = getClientIp(req);
+  const startTime = Date.now();
+
+  // Rate limit by IP
+  const limit = httpRateLimiter.isAllowed(clientIp);
+  if (!limit.allowed) {
+    res.writeHead(429, {
+      'Content-Type': 'text/plain',
+      'Retry-After': String(limit.retryAfter)
+    });
+    res.end('Too many requests.');
+    metrics.inc('apex_requests_total', { method: req.method, status: '429' });
+    return;
+  }
+
+  // Limit total concurrent requests
+  if (pendingRequests.size >= MAX_CONCURRENT_REQUESTS) {
+    sendError(res, 503, 'Service Unavailable', 'Too many concurrent requests. Try again later.');
+    metrics.inc('apex_requests_total', { method: req.method, status: '503' });
+    return;
+  }
+
+  const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+  const subdomain = host.split('.')[0];
+
+  const tunnelSocket = connectionManager.get(subdomain);
+  if (!tunnelSocket) {
+    sendError(res, 404, 'No Tunnel Found',
+      `The subdomain <b>${escapeHtml(subdomain)}</b> is not connected to a client.`);
+    metrics.inc('apex_requests_total', { method: req.method, status: '404' });
+    return;
+  }
+
+  // Validate request headers size
+  const headersSize = JSON.stringify(req.headers).length;
+  if (headersSize > MAX_REQUEST_HEADERS_SIZE) {
+    sendError(res, 431, 'Headers Too Large', 'Request headers exceed maximum size.');
+    metrics.inc('apex_requests_total', { method: req.method, status: '431' });
+    return;
+  }
+
+  const requestId = crypto.randomUUID();
+  let bodySize = 0;
+
+  // Send request start immediately (headers only)
+  try {
+    tunnelSocket.write(encodeRequestStart({
+      id: requestId,
+      method: req.method,
+      url: req.url,
+      headers: sanitizeHeaders(req.headers),
+      bodyExpected: true,
+    }));
+  } catch (err) {
+    sendError(res, 502, 'Tunnel Error', 'Failed to forward request to client.');
+    metrics.inc('apex_requests_total', { method: req.method, status: '502' });
+    return;
+  }
+
+  // Stream request body to client as it arrives
+  req.on('data', (chunk) => {
+    bodySize += chunk.length;
+    if (bodySize > MAX_BODY_SIZE) {
+      req.destroy();
+      sendError(res, 413, 'Payload Too Large', 'Request body exceeds 100MB limit.');
+      cleanupRequest(requestId);
+      metrics.inc('apex_requests_total', { method: req.method, status: '413' });
+      return;
+    }
+    if (!tunnelSocket || tunnelSocket.destroyed) {
+      req.destroy();
+      cleanupRequest(requestId);
+      return;
+    }
+    try {
+      tunnelSocket.write(encodeBodyChunk(requestId, chunk));
+    } catch {
+      req.destroy();
+      cleanupRequest(requestId);
+    }
+  });
+
+  req.on('end', () => {
+    if (!tunnelSocket || tunnelSocket.destroyed) {
+      cleanupRequest(requestId);
+      return;
+    }
+    try {
+      tunnelSocket.write(encodeBodyEnd(requestId));
+    } catch {
+      cleanupRequest(requestId);
+    }
+  });
+
+  req.on('error', (err) => {
+    logger.warn({ err: err.message, clientIp }, 'Incoming request error');
+    cleanupRequest(requestId);
+  });
+
+  req.on('aborted', () => {
+    cleanupRequest(requestId);
+  });
+
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      cleanupRequest(requestId);
+    }
+  });
+
+  const timer = setTimeout(() => {
+    const pending = pendingRequests.get(requestId);
+    if (pending) {
+      sendError(pending.res, 504, 'Gateway Timeout',
+        'The tunnel is open, but your local server is not responding.');
+      pendingRequests.delete(requestId);
+      metrics.inc('apex_requests_total', { method: req.method, status: '504' });
+    }
+  }, REQUEST_TIMEOUT_MS);
+
+  pendingRequests.set(requestId, {
+    res,
+    timer,
+    tunnelSocket,
+    responseStarted: false,
+    startTime,
+    method: req.method,
   });
 });
 
-// ─── Helpers
-
-// Prevent user-controlled values from injecting HTML into error pages
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
+// ─── Metrics Server
+const metricsServer = http.createServer((req, res) => {
+  if (req.url === '/metrics') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4' });
+    res.end(metrics.format());
+    return;
+  }
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'healthy',
+      uptime: (Date.now() - metrics.startTime) / 1000,
+      activeConnections: connectionManager.getStats().activeConnections,
+      pendingRequests: pendingRequests.size,
+    }));
+    return;
+  }
+  res.writeHead(404);
+  res.end('Not found');
+});
 
 // ─── Start
-tcpServer.listen(TCP_PORT,   () => logger.info(`Relay TCP  listening on :${TCP_PORT}`));
+tcpServer.listen(TCP_PORT, () => logger.info(`Relay TCP listening on :${TCP_PORT} ${tlsOptions ? '(TLS)' : '(plaintext)'}`));
 httpServer.listen(HTTP_PORT, () => logger.info(`Relay HTTP listening on :${HTTP_PORT}`));
+metricsServer.listen(METRICS_PORT, () => logger.info(`Metrics available on :${METRICS_PORT}/metrics`));
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  logger.info('Shutting down gracefully...');
+  httpRateLimiter.destroy();
+  registerRateLimiter.destroy();
+  tcpServer.close();
+  httpServer.close();
+  metricsServer.close();
+  process.exit(0);
+});
