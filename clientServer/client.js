@@ -210,7 +210,7 @@ function proxyRequest(msg) {
     : '/';
 
   const localReq = http.request({
-    hostname: 'localhost',
+    hostname: '127.0.0.1',
     port: localPort,
     path: safePath,
     method: msg.method,
