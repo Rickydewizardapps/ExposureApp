@@ -1,4 +1,16 @@
-# ApexTunnel v2.0
+<div align="center">
+  <img src="assets/logo.svg" alt="ExposureApp" width="400"/>
+</div>
+
+<br/>
+
+<div align="center">
+
+[![MIT](https://img.shields.io/badge/license-MIT-00D4FF?style=flat-square)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-0066FF?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
+[![Zero deps](https://img.shields.io/badge/dependencies-zero-00D4FF?style=flat-square)]()
+
+</div>
 
 A self-hosted reverse tunnel. Expose any local server to the internet via a persistent TCP connection between a relay (VPS) and a client (your machine).
 
