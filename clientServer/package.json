@@ -22,7 +22,7 @@
   "main": "dist/bundle.cjs",
   "type": "module",
   "bin": {
-    "apex": "./dist/bundle.cjs"
+    "apex": "./client.js"
   },
   "scripts": {
     "start": "node client.js",
