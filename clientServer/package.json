@@ -2,6 +2,24 @@
   "name": "apex-client",
   "version": "2.0.0",
   "description": "Local bridge for ApexTunnel, proxying local traffic to the public internet.",
+  "keywords": [
+    "tunnel",
+    "proxy",
+    "local-bridge",
+    "port-forwarding",
+    "reverse-proxy",
+    "expose-localhost",
+    "ngrok-alternative",
+    "ssh-tunnel",
+    "http-proxy",
+    "websocket-tunnel",
+    "termux",
+    "arm64",
+    "linux-x64",
+    "windows-x64",
+    "cross-platform",
+    "cli-tool"
+  ],
   "main": "dist/bundle.cjs",
   "type": "module",
   "bin": {
@@ -12,7 +30,8 @@
     "dev": "nodemon client.js",
     "bundle": "mkdir -p dist && esbuild client.js --bundle --platform=node --outfile=dist/bundle.cjs --format=cjs --external:blessed",
     "build": "pnpm run bundle && pkg . --out-path bin/",
-    "build:all": "pnpm run bundle && pkg . --targets node18-linux-x64,node18-macos-x64,node18-win-x64,node18-linux-arm64 --out-path bin/"
+    "build:all": "pnpm run bundle && pkg . --targets node18-linux-x64,node18-linux-arm64,node18-win-x64 --out-path bin/ && cp bin/apex-client-linux-arm64 bin/apex-termux",
+    "build:termux": "nexe client.js --target linux-arm64-18.20.0 --output bin/apex-termux --build --verbose"
   },
   "author": "BraveraTech",
   "license": "ISC",
@@ -24,6 +43,7 @@
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
+    "nexe": "5.0.0-beta.4",
     "nodemon": "^3.1.14",
     "pkg": "^5.8.1"
   },
