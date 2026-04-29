@@ -6,12 +6,16 @@
   "type": "module",
   "scripts": {
     "start": "node relay.js",
+    "pm2": "pm2 start relay.js --name apextunnel",
+    "pm2:restart": "pm2 restart apextunnel --update-env",
+    "pm2:logs": "pm2 logs apextunnel",
+    "pm2:stop": "pm2 stop apextunnel",
     "dev": "nodemon relay.js"
   },
   "keywords": [],
   "author": "BraveraTech",
   "license": "ISC",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@10.33.2",
   "devDependencies": {
     "nodemon": "^3.1.14"
   },
