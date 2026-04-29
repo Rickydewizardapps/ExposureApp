@@ -89,9 +89,15 @@ export function getStoredToken() {
 }
 
 export function saveSubdomain(subdomain) {
-  if (!subdomain || typeof subdomain !== 'string') return;
+  // Allow saving an empty string to explicitly clear the stored subdomain
+  if (typeof subdomain !== 'string') return;
   const config = readConfig();
-  config.subdomain = subdomain.trim();
+  const trimmed = subdomain.trim();
+  if (trimmed) {
+    config.subdomain = trimmed;
+  } else {
+    delete config.subdomain;
+  }
   writeConfig(config);
 }
 

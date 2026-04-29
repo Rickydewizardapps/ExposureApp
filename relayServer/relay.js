@@ -8,7 +8,7 @@ import { handleRegister } from './handlers/register.js';
 import { errorPage } from './pages/errorPages.js';
 import {
   ProtocolParser, FRAME_TYPES,
-  encodeJson, encodeRequestStart, encodeBodyChunk, encodeBodyEnd, encodePong
+  encodeJson, encodeRequestStart, encodeBodyChunk, encodeBodyEnd, encodePong,
 } from './src/protocol.js';
 import { ConnectionManager } from './src/connectionManager.js';
 import { RateLimiter } from './src/rateLimiter.js';
@@ -18,19 +18,19 @@ import { BackpressureController } from './src/backpressure.js';
 import { getTlsOptions, createSecureServer } from './src/tls.js';
 
 // ─── Config
-const TCP_PORT = Number(process.env.TCP_PORT) || 9000;
-const HTTP_PORT = Number(process.env.HTTP_PORT) || 2000;
-const METRICS_PORT = Number(process.env.METRICS_PORT) || 9090;
-const REQUEST_TIMEOUT_MS = 30000;
-const MAX_BODY_SIZE = 100 * 1024 * 1024; // 100MB
-const MAX_REQUEST_HEADERS_SIZE = 64 * 1024; // 64KB
-const MAX_CONCURRENT_REQUESTS = 1000;
-const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+const TCP_PORT            = Number(process.env.TCP_PORT)     || 9000;
+const HTTP_PORT           = Number(process.env.HTTP_PORT)    || 2000;
+const METRICS_PORT        = Number(process.env.METRICS_PORT) || 9090;
+const REQUEST_TIMEOUT_MS  = 30000;
+const MAX_BODY_SIZE       = 100 * 1024 * 1024; // 100 MB
+const MAX_REQUEST_HEADERS_SIZE = 64 * 1024;    // 64 KB
+const MAX_CONCURRENT_REQUESTS  = 1000;
+const MAX_BUFFERED_BYTES  = 8 * 1024 * 1024;
 
 // ─── State
-const pendingRequests = new Map(); // requestId -> {res, timer, tunnelSocket, responseStarted, startTime, method}
+const pendingRequests  = new Map(); // requestId → {res, timer, tunnelSocket, responseStarted, startTime, method}
 const connectionManager = new ConnectionManager({ logger });
-const httpRateLimiter = new RateLimiter({ windowMs: 60000, maxRequests: 120, keyPrefix: 'http:' });
+const httpRateLimiter   = new RateLimiter({ windowMs: 60000, maxRequests: 120, keyPrefix: 'http:' });
 const registerRateLimiter = new RateLimiter({ windowMs: 60000, maxRequests: 10, keyPrefix: 'reg:' });
 
 // ─── Metrics helpers
@@ -50,6 +50,9 @@ const sendError = (res, status, title, message) => {
   }
 };
 
+/**
+ * Cancel a pending request's timer and remove it from the map.
+ */
 function cleanupRequest(id) {
   const pending = pendingRequests.get(id);
   if (pending) {
@@ -58,21 +61,34 @@ function cleanupRequest(id) {
   }
 }
 
+/**
+ * Called when the tunnel socket disconnects. Sends a 502 for every in-flight
+ * request that was being forwarded through that socket.
+ */
 function cleanupPendingRequests(socket) {
   for (const [id, pending] of pendingRequests) {
     if (pending.tunnelSocket === socket) {
       clearTimeout(pending.timer);
-      sendError(pending.res, 502, 'Tunnel Disconnected', 'The connection to the client was lost.');
+      sendError(
+        pending.res,
+        502,
+        'Tunnel Disconnected',
+        'The tunnel client disconnected before the response was complete. ' +
+        'The local application may still be running — please retry.',
+      );
       pendingRequests.delete(id);
     }
   }
 }
 
 // ─── Handle Response frames from Client
+
 function handleResponseStart(msg) {
   const pending = pendingRequests.get(msg.id);
   if (!pending) return;
 
+  // Timer cleared here; cleanupRequest is not called because we may still
+  // receive BODY_CHUNK / BODY_END frames for this id.
   clearTimeout(pending.timer);
 
   if (pending.res.writableEnded || pending.res.headersSent) {
@@ -84,10 +100,17 @@ function handleResponseStart(msg) {
     const headers = sanitizeHeaders(msg.headers || {});
     pending.res.writeHead(msg.statusCode || 502, headers);
     pending.responseStarted = true;
+    pending.statusCode = msg.statusCode || 502;
 
-    if (!msg.bodyExpected) {
+    const bodyExpected = msg.bodyExpected === true;
+
+    if (!bodyExpected) {
       pending.res.end();
-      recordRequestMetrics(pending.method || 'GET', msg.statusCode || 502, (performance.now() - pending.startTime) / 1000);
+      recordRequestMetrics(
+        pending.method || 'GET',
+        msg.statusCode || 502,
+        (performance.now() - pending.startTime) / 1000,
+      );
       pendingRequests.delete(msg.id);
     }
   } catch (err) {
@@ -103,7 +126,7 @@ function handleBodyChunk(requestId, data) {
   try {
     pending.res.write(data);
   } catch (err) {
-    logger.error({ err: err.message, requestId }, 'Error writing response body');
+    logger.error({ err: err.message, requestId }, 'Error writing response body chunk');
     cleanupRequest(requestId);
   }
 }
@@ -116,11 +139,16 @@ function handleBodyEnd(requestId) {
     if (!pending.res.writableEnded) {
       pending.res.end();
     }
-    recordRequestMetrics(pending.method || 'GET', pending.statusCode || 200, (performance.now() - pending.startTime) / 1000);
+    recordRequestMetrics(
+      pending.method || 'GET',
+      pending.statusCode || 200,
+      (performance.now() - pending.startTime) / 1000,
+    );
   } catch (err) {
-    logger.error({ err: err.message, requestId }, 'Error ending response');
+    logger.error({ err: err.message, requestId }, 'Error ending response body');
   }
-  pendingRequests.delete(requestId);
+
+  cleanupRequest(requestId);
 }
 
 // ─── TCP Server (client connections)
@@ -130,7 +158,7 @@ function createTcpConnectionHandler(socket) {
   let registered = false;
   const bp = new BackpressureController(socket, MAX_BUFFERED_BYTES);
 
-  // Registration timeout — drop if not registered within 15s
+  // Drop client if it does not register within 15 s.
   const regTimeout = setTimeout(() => {
     if (!registered) {
       logger.warn({ remote: socket.remoteAddress }, 'Client timed out before registering');
@@ -140,9 +168,8 @@ function createTcpConnectionHandler(socket) {
 
   parser.onFrame = async (type, payload) => {
     if (type === FRAME_TYPES.PING) {
-      // Client sent unsolicited ping — respond with pong
       try { bp.write(encodePong()); } catch (err) {
-        logger.error({ err: err.message }, 'Failed to send pong');
+        logger.error({ err: err.message }, 'Failed to send pong to client');
       }
       return;
     }
@@ -182,7 +209,7 @@ function createTcpConnectionHandler(socket) {
   };
 
   parser.onError = (err) => {
-    logger.error({ err: err.message, remote: socket.remoteAddress }, 'Protocol error');
+    logger.error({ err: err.message, remote: socket.remoteAddress }, 'Protocol parse error');
     socket.destroy();
   };
 
@@ -223,14 +250,14 @@ const httpServer = http.createServer((req, res) => {
   if (!limit.allowed) {
     res.writeHead(429, {
       'Content-Type': 'text/plain',
-      'Retry-After': String(limit.retryAfter)
+      'Retry-After': String(limit.retryAfter),
     });
     res.end('Too many requests.');
     metrics.inc('apex_requests_total', { method: req.method, status: '429' });
     return;
   }
 
-  // Limit total concurrent requests
+  // Cap concurrent in-flight requests
   if (pendingRequests.size >= MAX_CONCURRENT_REQUESTS) {
     sendError(res, 503, 'Service Unavailable', 'Too many concurrent requests. Try again later.');
     metrics.inc('apex_requests_total', { method: req.method, status: '503' });
@@ -248,7 +275,7 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
-  // Validate request headers size
+  // Guard: reject oversized headers before allocating a request slot.
   const headersSize = JSON.stringify(req.headers).length;
   if (headersSize > MAX_REQUEST_HEADERS_SIZE) {
     sendError(res, 431, 'Headers Too Large', 'Request headers exceed maximum size.');
@@ -259,7 +286,7 @@ const httpServer = http.createServer((req, res) => {
   const requestId = crypto.randomUUID();
   let bodySize = 0;
 
-  // Send request start immediately (headers only)
+  // Forward request headers immediately — body follows as BODY_CHUNK frames.
   try {
     tunnelSocket.write(encodeRequestStart({
       id: requestId,
@@ -274,12 +301,12 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
-  // Stream request body to client as it arrives
+  // Stream incoming body to the client.
   req.on('data', (chunk) => {
     bodySize += chunk.length;
     if (bodySize > MAX_BODY_SIZE) {
       req.destroy();
-      sendError(res, 413, 'Payload Too Large', 'Request body exceeds 100MB limit.');
+      sendError(res, 413, 'Payload Too Large', 'Request body exceeds 100 MB limit.');
       cleanupRequest(requestId);
       metrics.inc('apex_requests_total', { method: req.method, status: '413' });
       return;
@@ -318,19 +345,23 @@ const httpServer = http.createServer((req, res) => {
     cleanupRequest(requestId);
   });
 
-  // Browser disconnects before response completes
+  // Browser disconnected before response was written.
   res.on('close', () => {
     if (!res.writableEnded) {
       cleanupRequest(requestId);
     }
   });
 
-  // Timeout if client never responds
+  // Timeout: tunnel is connected but local app never replied within 30s.
   const timer = setTimeout(() => {
     const pending = pendingRequests.get(requestId);
     if (pending) {
-      sendError(pending.res, 504, 'Gateway Timeout',
-        'The tunnel is open, but your local server is not responding.');
+      sendError(
+        pending.res,
+        504,
+        'Gateway Timeout',
+        'The tunnel is open, but your local server is not responding.',
+      );
       pendingRequests.delete(requestId);
       metrics.inc('apex_requests_total', { method: req.method, status: '504' });
     }
@@ -343,6 +374,7 @@ const httpServer = http.createServer((req, res) => {
     responseStarted: false,
     startTime,
     method: req.method,
+    statusCode: null,
   });
 });
 
@@ -368,13 +400,19 @@ const metricsServer = http.createServer((req, res) => {
 });
 
 // ─── Start
-tcpServer.listen(TCP_PORT, () => logger.info(`Relay TCP listening on :${TCP_PORT} ${tlsOptions ? '(TLS)' : '(plaintext)'}`));
-httpServer.listen(HTTP_PORT, () => logger.info(`Relay HTTP listening on :${HTTP_PORT}`));
-metricsServer.listen(METRICS_PORT, () => logger.info(`Metrics available on :${METRICS_PORT}/metrics`));
+tcpServer.listen(TCP_PORT, () =>
+  logger.info(`Relay TCP listening on :${TCP_PORT} ${tlsOptions ? '(TLS)' : '(plaintext)'}`),
+);
+httpServer.listen(HTTP_PORT, () =>
+  logger.info(`Relay HTTP listening on :${HTTP_PORT}`),
+);
+metricsServer.listen(METRICS_PORT, () =>
+  logger.info(`Metrics available on :${METRICS_PORT}/metrics`),
+);
 
-// Graceful shutdown
+// ─── Graceful Shutdown
 process.on('SIGINT', () => {
-  logger.info('Shutting down gracefully...');
+  logger.info('Shutting down gracefully…');
   httpRateLimiter.destroy();
   registerRateLimiter.destroy();
   tcpServer.close();

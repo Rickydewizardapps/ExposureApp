@@ -34,3 +34,8 @@ build/
 clientServer/dist/
 clientServer/bin/
 *.zip
+
+# unrelated files
+clie.js 
+rel.js
+conn.js

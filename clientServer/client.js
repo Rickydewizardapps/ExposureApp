@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 import http from 'http';
 import { parseArgs } from 'util';
 import {
@@ -134,7 +135,7 @@ const tunnel = new TunnelConnection({
   host: RELAY_HOST,
   port: RELAY_PORT,
   token,
-  subdomain: values.subdomain || getStoredSubdomain() || '',
+  subdomain: values.subdomain || '',
   localPort,
   useTls: USE_TLS,
   caPath: TLS_CA_PATH,
@@ -149,11 +150,14 @@ const tunnel = new TunnelConnection({
       setReconnecting();
       return;
     }
+    if (err.code === 'SUBDOMAIN_IN_USE') {
+      saveSubdomain('');
+      setReconnecting();
+      return;
+    }
     destroyUI();
     console.error('\x1b[31m✖\x1b[0m ' + String(err.message ?? 'Unknown server error'));
-    if (err.code !== 'SUBDOMAIN_IN_USE') {
-      process.exit(1);
-    }
+    process.exit(1);
   },
   onRequest: (msg) => {
     if (msg.type === 'request') {
@@ -196,20 +200,42 @@ const HOP_BY_HOP = new Set([
   'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade',
 ]);
 
+/**
+ * Send a 502 error response back through the tunnel and clean up local state.
+ * Used by both the request-error handler and the client-side timeout so the
+ */
+function send502(requestId, method, safePath, localReq) {
+  try { localReq?.destroy(); } catch {}
+
+  const html = getClientErrorPage(localPort);
+  tunnel.sendResponseStart(requestId, 502, {
+    'content-type': 'text/html',
+    'content-length': String(Buffer.byteLength(html)),
+  }, true);
+  tunnel.sendBodyChunk(requestId, Buffer.from(html));
+  tunnel.sendBodyEnd(requestId);
+
+  logRequest(method, safePath, 502);
+}
+
 function proxyRequest(msg) {
   const reqState = {
     bodyComplete: !msg.bodyExpected,
     localReq: null,
     earlyChunks: [],
     paused: false,
+    responseStarted: false,
   };
   activeRequests.set(msg.id, reqState);
 
+  const safePath = typeof msg.url === 'string' && msg.url.startsWith('/')
+    ? msg.url
+    : '/';
+
   reqState.timeout = setTimeout(() => {
-    if (activeRequests.has(msg.id)) {
-      activeRequests.delete(msg.id);
-      try { reqState.localReq?.destroy(); } catch {}
-    }
+    if (!activeRequests.has(msg.id)) return;
+    activeRequests.delete(msg.id);
+    send502(msg.id, msg.method, safePath, reqState.localReq);
   }, 60000);
 
   const headers = {};
@@ -219,10 +245,6 @@ function proxyRequest(msg) {
     }
   }
   headers['host'] = `${LOCAL_HOST}:${localPort}`;
-
-  const safePath = typeof msg.url === 'string' && msg.url.startsWith('/')
-    ? msg.url
-    : '/';
 
   const localReq = http.request({
     hostname: LOCAL_HOST,
@@ -235,6 +257,7 @@ function proxyRequest(msg) {
     const hasBody = !noBodyStatus.includes(localRes.statusCode) && msg.method !== 'HEAD';
 
     tunnel.sendResponseStart(msg.id, localRes.statusCode, localRes.headers, hasBody);
+    reqState.responseStarted = true;
 
     if (!hasBody) {
       logRequest(msg.method, safePath, localRes.statusCode);
@@ -255,8 +278,10 @@ function proxyRequest(msg) {
     });
 
     localRes.on('error', (err) => {
-      console.error(`[PROXY] Response error: ${err.message}`);
-      tunnel.sendResponseStart(msg.id, 502, { 'content-type': 'text/html' }, false);
+      // RESPONSE_START already sent — only send body end to close the stream.
+      console.error(`[PROXY] Response stream error: ${err.message}`);
+      tunnel.sendBodyEnd(msg.id);
+      logRequest(msg.method, safePath, 502);
       clearTimeout(reqState.timeout);
       activeRequests.delete(msg.id);
     });
@@ -268,6 +293,7 @@ function proxyRequest(msg) {
     reqState.paused = false;
   });
 
+  // Flush any body chunks that arrived before the http.request() was ready.
   if (reqState.earlyChunks.length > 0) {
     for (const chunk of reqState.earlyChunks) {
       const writable = localReq.write(chunk);
@@ -275,6 +301,7 @@ function proxyRequest(msg) {
         reqState.paused = true;
       }
     }
+    reqState.earlyChunks = [];
   }
 
   if (reqState.bodyComplete) {
@@ -283,17 +310,10 @@ function proxyRequest(msg) {
 
   localReq.on('error', (err) => {
     console.error(`[PROXY ERROR] ${msg.method} ${safePath} -> ${LOCAL_HOST}:${localPort}: ${err.message}`);
-    try { localReq.destroy(); } catch {}
-    const html = getClientErrorPage(localPort);
-    tunnel.sendResponseStart(msg.id, 502, {
-      'content-type': 'text/html',
-      'content-length': String(Buffer.byteLength(html)),
-    }, true);
-    tunnel.sendBodyChunk(msg.id, Buffer.from(html));
-    tunnel.sendBodyEnd(msg.id);
-    logRequest(msg.method, safePath, 502);
     clearTimeout(reqState.timeout);
     activeRequests.delete(msg.id);
+    // send502 handles destroy + tunnel notification in one place.
+    send502(msg.id, msg.method, safePath, localReq);
   });
 }
 

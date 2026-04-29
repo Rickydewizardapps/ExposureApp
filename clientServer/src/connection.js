@@ -7,12 +7,16 @@ import tls from 'tls';
 import fs from 'fs';
 import {
   ProtocolParser, FRAME_TYPES,
-  encodeJson, encodeResponseStart, encodeBodyChunk, encodeBodyEnd, encodePong
+  encodeJson, encodeResponseStart, encodeBodyChunk, encodeBodyEnd, encodePong,
 } from './protocol.js';
 
 export class TunnelConnection {
-  constructor({ host, port, token, subdomain, localPort, useTls = false, caPath = null,
-                onRegistered, onError, onRequest, logger = console }) {
+  constructor({
+    host, port, token, subdomain, localPort,
+    useTls = false, caPath = null,
+    onRegistered, onError, onRequest,
+    logger = console,
+  }) {
     this.host = host;
     this.port = port;
     this.token = token;
@@ -31,8 +35,6 @@ export class TunnelConnection {
     this.reconnectDelay = 3000;
     this.maxReconnectDelay = 60000;
     this.registered = false;
-    this.heartbeatTimer = null;
-    this.backoffJitter = 0;
   }
 
   connect() {
@@ -48,38 +50,32 @@ export class TunnelConnection {
       this._reconnect();
     };
 
-    const connectOptions = {
-      host: this.host,
-      port: this.port,
-    };
+    const connectOptions = { host: this.host, port: this.port };
 
     if (this.useTls) {
       connectOptions.rejectUnauthorized = true;
       if (this.caPath && fs.existsSync(this.caPath)) {
         connectOptions.ca = fs.readFileSync(this.caPath);
       }
-      this.socket = tls.connect(connectOptions, () => {
-        this._onConnect();
-      });
+      this.socket = tls.connect(connectOptions, () => this._onConnect());
     } else {
-      this.socket = net.connect(connectOptions, () => {
-        this._onConnect();
-      });
+      this.socket = net.connect(connectOptions, () => this._onConnect());
     }
 
     this.socket.on('data', (chunk) => this.parser.feed(chunk));
+
     this.socket.on('error', (err) => {
       this.logger.error('Tunnel error:', err.message);
     });
+
     this.socket.on('close', () => {
-      this._clearHeartbeat();
       if (!this.intentionalClose) {
         this._reconnect();
       }
     });
 
     this.socket.on('timeout', () => {
-      this.logger.warn('Socket timeout');
+      this.logger.warn('Socket timeout — destroying');
       this.socket.destroy();
     });
   }
@@ -87,7 +83,9 @@ export class TunnelConnection {
   _onConnect() {
     this.reconnectDelay = 3000;
     this.socket.setNoDelay(true);
-    this.socket.setTimeout(60000);
+    // Keep-alive timeout longer than the relay's ping interval (30s) so the
+    // relay's own heartbeat drives liveness detection, not the OS TCP timer.
+    this.socket.setTimeout(90000);
 
     this.socket.write(encodeJson({
       type: 'register',
@@ -98,19 +96,27 @@ export class TunnelConnection {
   }
 
   _handleFrame(type, payload) {
+    // ── Control frames
     if (type === FRAME_TYPES.PING) {
+      // Relay is probing liveness — respond immediately.
       this._sendPong();
       return;
     }
 
     if (type === FRAME_TYPES.PONG) {
+      // Relay acknowledged one of our earlier pongs; nothing to do.
       return;
     }
 
+    // ── JSON control
     if (type === FRAME_TYPES.JSON_CONTROL) {
       if (payload.type === 'error') {
         if (payload.code === 'SUBDOMAIN_IN_USE') {
-          this.logger.warn('Subdomain in use, will retry...');
+          this.logger.warn(
+            'Subdomain in use — clearing stored subdomain and reconnecting with a server-assigned one',
+          );
+          this.subdomain = '';
+          this.onError?.(payload);
           this._reconnect();
           return;
         }
@@ -122,14 +128,18 @@ export class TunnelConnection {
 
       if (payload.type === 'registered') {
         this.registered = true;
-        this._startHeartbeat();
+
         this.onRegistered?.(payload);
         return;
       }
     }
 
+    // ── Request frames
     if (type === FRAME_TYPES.REQUEST_START) {
-      this.onRequest?.(payload);
+      // Tag the payload so client.js can dispatch on msg.type === 'request'.
+      // The raw REQUEST_START payload carries no .type field; without this tag
+      // the dispatcher's check always failed and proxyRequest() was never
+      this.onRequest?.({ ...payload, type: 'request' });
       return;
     }
 
@@ -144,21 +154,6 @@ export class TunnelConnection {
     }
   }
 
-  _startHeartbeat() {
-    this.heartbeatTimer = setInterval(() => {
-      if (!this.socket || this.socket.destroyed) {
-        this._clearHeartbeat();
-        return;
-      }
-      try {
-        this.socket.write(encodePong());
-      } catch (err) {
-        this.logger.error('Heartbeat write failed:', err.message);
-        this._reconnect();
-      }
-    }, 25000);
-  }
-
   _sendPong() {
     if (!this.socket || this.socket.destroyed) return;
     try {
@@ -168,15 +163,7 @@ export class TunnelConnection {
     }
   }
 
-  _clearHeartbeat() {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
-  }
-
   _reconnect() {
-    this._clearHeartbeat();
     this.onError?.({ type: 'reconnecting', delay: this.reconnectDelay });
 
     const jitter = Math.random() * 1000;
@@ -188,15 +175,12 @@ export class TunnelConnection {
     }, delay);
   }
 
+  // ── Outbound helpers
+
   sendResponseStart(requestId, statusCode, headers, bodyExpected) {
     if (!this.socket || this.socket.destroyed) return;
     try {
-      this.socket.write(encodeResponseStart({
-        id: requestId,
-        statusCode,
-        headers,
-        bodyExpected,
-      }));
+      this.socket.write(encodeResponseStart({ id: requestId, statusCode, headers, bodyExpected }));
     } catch (err) {
       this.logger.error('sendResponseStart failed:', err.message);
     }
@@ -222,7 +206,6 @@ export class TunnelConnection {
 
   disconnect() {
     this.intentionalClose = true;
-    this._clearHeartbeat();
     if (this.socket) {
       try { this.socket.destroy(); } catch (err) {
         this.logger.error('Socket destroy failed:', err.message);
