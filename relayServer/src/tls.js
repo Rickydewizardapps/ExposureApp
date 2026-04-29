@@ -7,8 +7,8 @@ import tls from 'tls';
 import logger from '../logger.js';
 
 export function getTlsOptions() {
-  const keyPath = process.env.TLS_KEY_PATH || './key.pem';
-  const certPath = process.env.TLS_CERT_PATH || './cert.pem';
+  const keyPath = process.env.TLS_KEY_PATH || './privkey.pem';
+  const certPath = process.env.TLS_CERT_PATH || './fullchain.pem';
 
   const keyExists = fs.existsSync(keyPath);
   const certExists = fs.existsSync(certPath);
