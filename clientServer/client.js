@@ -11,9 +11,9 @@ import { getClientErrorPage } from './src/clientError.js';
 import { TunnelConnection } from './src/connection.js';
 
 // ─── Constants
-const RELAY_HOST = process.env.APEX_RELAY ?? 'relay.apextunnel.top';
-const RELAY_PORT = Number(process.env.APEX_RELAY_PORT ?? '9000');
-const USE_TLS = process.env.APEX_TLS === 'true' || process.env.APEX_TLS === '1';
+const RELAY_HOST = process.env.APEX_RELAY || 'relay.apextunnel.top';
+const RELAY_PORT = Number(process.env.APEX_RELAY_PORT) || 9000;
+const USE_TLS = process.env.APEX_TLS === 'true' || process.env.APEX_TLS === '1' || true;
 const TLS_CA_PATH = process.env.APEX_TLS_CA || null;
 const DEFAULT_LOCAL_PORT = 8080;
 const VERSION = '2.0.0';

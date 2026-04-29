@@ -13,7 +13,6 @@
     "ssh-tunnel",
     "http-proxy",
     "websocket-tunnel",
-    "termux",
     "arm64",
     "linux-x64",
     "windows-x64",
@@ -30,7 +29,7 @@
     "dev": "nodemon client.js",
     "bundle": "mkdir -p dist && esbuild client.js --bundle --platform=node --outfile=dist/bundle.cjs --format=cjs --external:blessed",
     "build": "pnpm run bundle && pkg . --out-path bin/",
-    "build:all": "pnpm run bundle && pkg . --targets node18-linux-x64,node18-linux-arm64,node18-win-x64 --out-path bin/ && cp bin/apex-client-linux-arm64 bin/apex-termux",
+    "build:all": "pnpm run bundle && pkg . --targets node18-linux-x64,node18-linux-arm64,node18-win-x64 --out-path bin/ && cp bin/apex-client-linux-arm64",
     "build:termux": "nexe client.js --target linux-arm64-18.20.0 --output bin/apex-termux --build --verbose"
   },
   "author": "BraveraTech",
