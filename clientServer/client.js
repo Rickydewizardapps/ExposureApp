@@ -2,53 +2,48 @@
 
 import http from 'http';
 import { parseArgs } from 'util';
+import { C } from './src/colors.js';
+import { CONFIG, validateConfig } from './src/config.js';
 import {
   setConnecting, setOnline, setReconnecting,
   logRequest, destroyUI, uiActive, setRestartCallback,
 } from './src/cli.js';
-import { getStoredToken, saveToken, saveSubdomain, getStoredSubdomain } from './src/auth.js';
+import { getStoredToken, saveToken, saveSubdomain } from './src/auth.js';
 import { getClientErrorPage } from './src/clientError.js';
 import { TunnelConnection } from './src/connection.js';
 
-// ─── Constants
-const RELAY_HOST = process.env.APEX_RELAY || 'relay.apextunnel.top';
-const RELAY_PORT = Number(process.env.APEX_RELAY_PORT) || 9000;
-const USE_TLS = process.env.APEX_TLS === 'true' || process.env.APEX_TLS === '1' || true;
-const TLS_CA_PATH = process.env.APEX_TLS_CA || null;
-const DEFAULT_LOCAL_PORT = 8080;
-const VERSION = '2.0.0';
-
-// ─── Validate RELAY_PORT
-if (!Number.isInteger(RELAY_PORT) || RELAY_PORT < 1 || RELAY_PORT > 65535) {
-  console.error('\x1b[31m✖\x1b[0m Invalid APEX_RELAY_PORT value. Must be 1–65535.');
+try {
+  validateConfig();
+} catch (err) {
+  console.error(`${C.error}✖${C.reset} ${err.message}`);
   process.exit(1);
 }
 
-// ─── Help
+const { relay, tls, local, app } = CONFIG;
+
 const HELP = `
- \x1b[1mApexTunnel v${VERSION}\x1b[0m — expose localhost to the internet
+ ${C.brandBold}ApexTunnel v${app.version}${C.reset} — expose localhost to the internet
 
- \x1b[1mUsage:\x1b[0m
-   apex http <port>           Expose a local port
-   apex http <port> --subdomain <name>  Expose with a custom subdomain
-   apex authtoken <token>     Save your auth token
-   apex status                Show saved token & relay info
-   apex help                  Show this message
+ ${C.brandBold}Usage:${C.reset}
+   ${C.text}apex http <port>${C.reset}              ${C.dim}Expose a local port${C.reset}
+   ${C.text}apex http <port> --subdomain <name>${C.reset}  ${C.dim}Expose with a custom subdomain${C.reset}
+   ${C.text}apex authtoken <token>${C.reset}     ${C.dim}Save your auth token${C.reset}
+   ${C.text}apex status${C.reset}                ${C.dim}Show saved token & relay info${C.reset}
+   ${C.text}apex help${C.reset}                  ${C.dim}Show this message${C.reset}
 
- \x1b[1mExamples:\x1b[0m
-   apex http 3000
-   apex http 3000 --subdomain myapp
-   apex authtoken eyJhbGciOiJIUzI1NiJ9...
+ ${C.brandBold}Examples:${C.reset}
+   ${C.dim}apex http 3000${C.reset}
+   ${C.dim}apex http 3000 --subdomain myapp${C.reset}
+   ${C.dim}apex authtoken eyJhbGciOiJIUzI1NiJ9...${C.reset}
 
- \x1b[1mEnv overrides:\x1b[0m
-   APEX_RELAY       Relay hostname (default: relay.apextunnel.top)
-   APEX_RELAY_PORT  Relay port (default: 9000)
-   APEX_TLS         Enable TLS on tunnel (default: false)
-   APEX_TLS_CA      Path to CA certificate for self-signed TLS
-   APEX_LOCAL_HOST  Local app hostname (default: localhost)
+ ${C.brandBold}Env overrides:${C.reset}
+   ${C.text}APEX_RELAY${C.reset}       ${C.dim}Relay hostname (default: relay.apextunnel.top)${C.reset}
+   ${C.text}APEX_RELAY_PORT${C.reset}  ${C.dim}Relay port (default: 9000)${C.reset}
+   ${C.text}APEX_TLS${C.reset}         ${C.dim}Enable TLS on tunnel (default: false)${C.reset}
+   ${C.text}APEX_TLS_CA${C.reset}      ${C.dim}Path to CA certificate for self-signed TLS${C.reset}
+   ${C.text}APEX_LOCAL_HOST${C.reset}  ${C.dim}Local app hostname (default: localhost)${C.reset}
 `.trimStart();
 
-// ─── Command Routing
 const argv = process.argv.slice(2);
 const [cmd = ''] = argv;
 
@@ -58,22 +53,22 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 }
 
 if (cmd === '--version' || cmd === '-v') {
-  console.log(`apex v${VERSION}`);
+  console.log(`${C.brandBold}apex v${app.version}${C.reset}`);
   process.exit(0);
 }
 
 if (cmd === 'authtoken') {
   const rawToken = argv[1];
   if (!rawToken || !rawToken.trim()) {
-    console.error('\x1b[31m✖\x1b[0m Usage: apex authtoken <token>');
+    console.error(`${C.error}✖${C.reset} ${C.text}Usage:${C.reset} apex authtoken <token>`);
     process.exit(1);
   }
   try {
     saveToken(rawToken);
-    console.log('\x1b[32m✔\x1b[0m Authtoken saved successfully.');
+    console.log(`${C.success}✔${C.reset} Authtoken saved successfully.`);
     process.exit(0);
   } catch (err) {
-    console.error(`\x1b[31m✖\x1b[0m ${err.message}`);
+    console.error(`${C.error}✖${C.reset} ${err.message}`);
     process.exit(1);
   }
 }
@@ -81,23 +76,23 @@ if (cmd === 'authtoken') {
 if (cmd === 'status') {
   const stored = getStoredToken();
   if (!stored) {
-    console.log('\x1b[33m○\x1b[0m No auth token saved.');
-    console.log(' Run: apex authtoken <token>');
+    console.log(`${C.warning}○${C.reset} No auth token saved.`);
+    console.log(`   ${C.dim}Run: apex authtoken <token>${C.reset}`);
   } else {
     const masked = stored.slice(0, 8) + '••••••••' + stored.slice(-4);
-    console.log(`\x1b[32m✔\x1b[0m Token : ${masked}`);
-    console.log(` Relay : ${RELAY_HOST}:${RELAY_PORT} ${USE_TLS ? '(TLS)' : ''}`);
+    console.log(`${C.success}✔${C.reset} Token : ${C.text}${masked}${C.reset}`);
+    console.log(`   ${C.dim}Relay : ${relay.host}:${relay.port} ${tls.enabled ? '(TLS)' : ''}${C.reset}`);
   }
   process.exit(0);
 }
 
 if (cmd !== 'http') {
-  console.error(`\x1b[31m✖\x1b[0m Unknown command: "${cmd}". Run: apex help`);
-  console.error('\n\x1b[36mAvailable commands:\x1b[0m');
-  console.error('  http <port> [--subdomain <name>]');
-  console.error('  authtoken <token>');
-  console.error('  status');
-  console.error('  help');
+  console.error(`${C.error}✖${C.reset} Unknown command: "${cmd}". Run: apex help`);
+  console.error(`\n${C.brandBold}Available commands:${C.reset}`);
+  console.error(`  ${C.text}http <port> [--subdomain <name>]${C.reset}`);
+  console.error(`  ${C.text}authtoken <token>${C.reset}`);
+  console.error(`  ${C.text}status${C.reset}`);
+  console.error(`  ${C.text}help${C.reset}`);
   process.exit(1);
 }
 
@@ -110,39 +105,34 @@ const { values, positionals } = parseArgs({
   strict: true,
 });
 
-const rawPort = positionals[0] ?? String(DEFAULT_LOCAL_PORT);
+const rawPort = positionals[0] ?? String(local.defaultPort);
 const localPort = Number(rawPort);
 
 if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) {
-  console.error(`\x1b[31m✖\x1b[0m Invalid port: "${rawPort}". Must be 1–65535.`);
+  console.error(`${C.error}✖${C.reset} Invalid port: "${rawPort}". Must be 1–65535.`);
   process.exit(1);
 }
 
 const token = getStoredToken();
 if (!token) {
-  console.error('\x1b[31m✖\x1b[0m No auth token found. Run: apex authtoken <token>');
+  console.error(`${C.error}✖${C.reset} No auth token found. Run: apex authtoken <token>`);
   process.exit(1);
 }
 
-// ─── State
 const activeRequests = new Map();
-const LOCAL_HOST = process.env.APEX_LOCAL_HOST || 'localhost';
 
-// ─── Bootstrap
 setConnecting(String(localPort));
 
 const tunnel = new TunnelConnection({
-  host: RELAY_HOST,
-  port: RELAY_PORT,
+  host: relay.host,
+  port: relay.port,
   token,
   subdomain: values.subdomain || '',
   localPort,
-  useTls: USE_TLS,
-  caPath: TLS_CA_PATH,
+  useTls: tls.enabled,
+  caPath: tls.caPath,
   onRegistered: (info) => {
-    if (info.subdomain) {
-      saveSubdomain(info.subdomain);
-    }
+    if (info.subdomain) saveSubdomain(info.subdomain);
     setOnline({ ...info, port: String(localPort) });
   },
   onError: (err) => {
@@ -156,7 +146,7 @@ const tunnel = new TunnelConnection({
       return;
     }
     destroyUI();
-    console.error('\x1b[31m✖\x1b[0m ' + String(err.message ?? 'Unknown server error'));
+    console.error(`${C.error}✖${C.reset} ${String(err.message ?? 'Unknown server error')}`);
     process.exit(1);
   },
   onRequest: (msg) => {
@@ -167,9 +157,7 @@ const tunnel = new TunnelConnection({
       if (req && !req.bodyComplete) {
         if (req.localReq) {
           const writable = req.localReq.write(msg.data);
-          if (!writable) {
-            req.paused = true;
-          }
+          if (!writable) req.paused = true;
         } else {
           req.earlyChunks.push(msg.data);
         }
@@ -178,9 +166,7 @@ const tunnel = new TunnelConnection({
       const req = activeRequests.get(msg.id);
       if (req) {
         req.bodyComplete = true;
-        if (req.localReq) {
-          req.localReq.end();
-        }
+        if (req.localReq) req.localReq.end();
       }
     }
   },
@@ -194,19 +180,13 @@ setRestartCallback(() => {
   setTimeout(() => tunnel.connect(), 500);
 });
 
-// ─── Proxy
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate',
   'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade',
 ]);
 
-/**
- * Send a 502 error response back through the tunnel and clean up local state.
- * Used by both the request-error handler and the client-side timeout so the
- */
 function send502(requestId, method, safePath, localReq) {
   try { localReq?.destroy(); } catch {}
-
   const html = getClientErrorPage(localPort);
   tunnel.sendResponseStart(requestId, 502, {
     'content-type': 'text/html',
@@ -214,7 +194,6 @@ function send502(requestId, method, safePath, localReq) {
   }, true);
   tunnel.sendBodyChunk(requestId, Buffer.from(html));
   tunnel.sendBodyEnd(requestId);
-
   logRequest(method, safePath, 502);
 }
 
@@ -228,9 +207,7 @@ function proxyRequest(msg) {
   };
   activeRequests.set(msg.id, reqState);
 
-  const safePath = typeof msg.url === 'string' && msg.url.startsWith('/')
-    ? msg.url
-    : '/';
+  const safePath = typeof msg.url === 'string' && msg.url.startsWith('/') ? msg.url : '/';
 
   reqState.timeout = setTimeout(() => {
     if (!activeRequests.has(msg.id)) return;
@@ -240,14 +217,12 @@ function proxyRequest(msg) {
 
   const headers = {};
   for (const [key, val] of Object.entries(msg.headers ?? {})) {
-    if (!HOP_BY_HOP.has(key.toLowerCase())) {
-      headers[key] = val;
-    }
+    if (!HOP_BY_HOP.has(key.toLowerCase())) headers[key] = val;
   }
-  headers['host'] = `${LOCAL_HOST}:${localPort}`;
+  headers['host'] = `${local.host}:${localPort}`;
 
   const localReq = http.request({
-    hostname: LOCAL_HOST,
+    hostname: local.host,
     port: localPort,
     path: safePath,
     method: msg.method,
@@ -266,19 +241,14 @@ function proxyRequest(msg) {
       return;
     }
 
-    localRes.on('data', (chunk) => {
-      tunnel.sendBodyChunk(msg.id, chunk);
-    });
-
+    localRes.on('data', (chunk) => tunnel.sendBodyChunk(msg.id, chunk));
     localRes.on('end', () => {
       tunnel.sendBodyEnd(msg.id);
       logRequest(msg.method, safePath, localRes.statusCode);
       clearTimeout(reqState.timeout);
       activeRequests.delete(msg.id);
     });
-
     localRes.on('error', (err) => {
-      // RESPONSE_START already sent — only send body end to close the stream.
       console.error(`[PROXY] Response stream error: ${err.message}`);
       tunnel.sendBodyEnd(msg.id);
       logRequest(msg.method, safePath, 502);
@@ -288,36 +258,26 @@ function proxyRequest(msg) {
   });
 
   reqState.localReq = localReq;
+  localReq.on('drain', () => { reqState.paused = false; });
 
-  localReq.on('drain', () => {
-    reqState.paused = false;
-  });
-
-  // Flush any body chunks that arrived before the http.request() was ready.
   if (reqState.earlyChunks.length > 0) {
     for (const chunk of reqState.earlyChunks) {
       const writable = localReq.write(chunk);
-      if (!writable) {
-        reqState.paused = true;
-      }
+      if (!writable) reqState.paused = true;
     }
     reqState.earlyChunks = [];
   }
 
-  if (reqState.bodyComplete) {
-    localReq.end();
-  }
+  if (reqState.bodyComplete) localReq.end();
 
   localReq.on('error', (err) => {
-    console.error(`[PROXY ERROR] ${msg.method} ${safePath} -> ${LOCAL_HOST}:${localPort}: ${err.message}`);
+    console.error(`[PROXY ERROR] ${msg.method} ${safePath} -> ${local.host}:${localPort}: ${err.message}`);
     clearTimeout(reqState.timeout);
     activeRequests.delete(msg.id);
-    // send502 handles destroy + tunnel notification in one place.
     send502(msg.id, msg.method, safePath, localReq);
   });
 }
 
-// ─── Graceful Shutdown
 const gracefulExit = () => {
   tunnel.disconnect();
   destroyUI();

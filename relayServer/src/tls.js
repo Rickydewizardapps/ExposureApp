@@ -1,20 +1,16 @@
-/**
- * TLS configuration helpers
- */
-
 import fs from 'fs';
 import tls from 'tls';
 import logger from '../logger.js';
+import { CONFIG } from './config.js';
 
 export function getTlsOptions() {
-  const keyPath = process.env.TLS_KEY_PATH || './privkey.pem';
-  const certPath = process.env.TLS_CERT_PATH || './fullchain.pem';
+  const { keyPath, certPath, disabled } = CONFIG.tls;
 
   const keyExists = fs.existsSync(keyPath);
   const certExists = fs.existsSync(certPath);
 
   if (!keyExists || !certExists) {
-    if (process.env.TLS_DISABLED !== 'true') {
+    if (!disabled) {
       logger.warn({
         keyPath,
         certPath,
@@ -28,7 +24,6 @@ export function getTlsOptions() {
   return {
     key: fs.readFileSync(keyPath),
     cert: fs.readFileSync(certPath),
-    // Modern TLS settings
     minVersion: 'TLSv1.2',
     ciphers: [
       'TLS_AES_256_GCM_SHA384',

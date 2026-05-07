@@ -1,22 +1,4 @@
-/**
- * ApexTunnel v2.0 Binary Framing Protocol
- *
- * Frame format:
- *   [4 bytes: uint32 BE payload length (max 16MB)]
- *   [1 byte: frame type]
- *   [N bytes: payload]
- *
- * Frame Types:
- *   0x01 - JSON_CONTROL: UTF-8 JSON object
- *   0x02 - REQUEST_START: JSON {id, method, url, headers, bodyExpected}
- *   0x03 - RESPONSE_START: JSON {id, statusCode, headers, bodyExpected}
- *   0x04 - BODY_CHUNK: {4-byte idLen + id + raw binary data}
- *   0x05 - BODY_END: {4-byte idLen + id}
- *   0x06 - PING: empty
- *   0x07 - PONG: empty
- */
-
-const MAX_FRAME_SIZE = 16 * 1024 * 1024; // 16MB
+const MAX_FRAME_SIZE = 16 * 1024 * 1024;
 const MAX_ID_LENGTH = 256;
 
 export const FRAME_TYPES = {

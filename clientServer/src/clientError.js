@@ -6,11 +6,20 @@ export function getClientErrorPage(port) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>502 | Local App Unreachable</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 80px auto; padding: 0 20px; color: #333; background: #fafafa; text-align: center; }
-    h1 { font-size: 72px; margin: 0; color: #e74c3c; }
-    h2 { margin-top: 10px; color: #555; font-weight: 500; }
-    p { line-height: 1.6; color: #666; }
-    .footer { margin-top: 40px; font-size: 12px; color: #999; }
+    body {
+      font-family: 'Courier New', Courier, monospace;
+      max-width: 600px;
+      margin: 80px auto;
+      padding: 0 20px;
+      color: #00ff88;
+      background: #0a0a0a;
+      text-align: center;
+    }
+    h1 { font-size: 72px; margin: 0; color: #00ff88; text-shadow: 0 0 20px #00ff8844; }
+    h2 { margin-top: 10px; color: #00cc6a; font-weight: 500; }
+    p { line-height: 1.6; color: #88ffaa; }
+    .footer { margin-top: 40px; font-size: 12px; color: #44aa66; }
+    strong { color: #00ff88; }
   </style>
 </head>
 <body>
