@@ -7,10 +7,12 @@ import { CONFIG, validateConfig } from './src/config.js';
 import {
   setConnecting, setOnline, setReconnecting,
   logRequest, destroyUI, uiActive, setRestartCallback,
+  getState, setInspectorPort,
 } from './src/cli.js';
 import { getStoredToken, saveToken, saveSubdomain } from './src/auth.js';
 import { getClientErrorPage } from './src/clientError.js';
 import { TunnelConnection } from './src/connection.js';
+import { startInspector, stopInspector } from './src/inspector.js';
 
 try {
   validateConfig();
@@ -180,6 +182,9 @@ setRestartCallback(() => {
   setTimeout(() => tunnel.connect(), 500);
 });
 
+const inspectorPort = await startInspector(() => getState());
+if (inspectorPort) setInspectorPort(inspectorPort);
+
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate',
   'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade',
@@ -194,7 +199,10 @@ function send502(requestId, method, safePath, localReq) {
   }, true);
   tunnel.sendBodyChunk(requestId, Buffer.from(html));
   tunnel.sendBodyEnd(requestId);
-  logRequest(method, safePath, 502);
+  logRequest(method, safePath, 502, 0, {
+    reqHeaders: {},
+    resHeaders: { 'content-type': 'text/html' },
+  });
 }
 
 function proxyRequest(msg) {
@@ -221,6 +229,8 @@ function proxyRequest(msg) {
   }
   headers['host'] = `${local.host}:${localPort}`;
 
+  const startTime = performance.now();
+
   const localReq = http.request({
     hostname: local.host,
     port: localPort,
@@ -235,7 +245,11 @@ function proxyRequest(msg) {
     reqState.responseStarted = true;
 
     if (!hasBody) {
-      logRequest(msg.method, safePath, localRes.statusCode);
+      const duration = Math.round(performance.now() - startTime);
+      logRequest(msg.method, safePath, localRes.statusCode, duration, {
+        reqHeaders: msg.headers,
+        resHeaders: localRes.headers,
+      });
       clearTimeout(reqState.timeout);
       activeRequests.delete(msg.id);
       return;
@@ -243,15 +257,22 @@ function proxyRequest(msg) {
 
     localRes.on('data', (chunk) => tunnel.sendBodyChunk(msg.id, chunk));
     localRes.on('end', () => {
+      const duration = Math.round(performance.now() - startTime);
       tunnel.sendBodyEnd(msg.id);
-      logRequest(msg.method, safePath, localRes.statusCode);
+      logRequest(msg.method, safePath, localRes.statusCode, duration, {
+        reqHeaders: msg.headers,
+        resHeaders: localRes.headers,
+      });
       clearTimeout(reqState.timeout);
       activeRequests.delete(msg.id);
     });
     localRes.on('error', (err) => {
       console.error(`[PROXY] Response stream error: ${err.message}`);
       tunnel.sendBodyEnd(msg.id);
-      logRequest(msg.method, safePath, 502);
+      logRequest(msg.method, safePath, 502, 0, {
+        reqHeaders: msg.headers,
+        resHeaders: {},
+      });
       clearTimeout(reqState.timeout);
       activeRequests.delete(msg.id);
     });
@@ -279,6 +300,7 @@ function proxyRequest(msg) {
 }
 
 const gracefulExit = () => {
+  stopInspector();
   tunnel.disconnect();
   destroyUI();
   process.exit(0);

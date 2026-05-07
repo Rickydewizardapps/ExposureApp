@@ -11,6 +11,11 @@ export const CONFIG = Object.freeze({
     host: process.env.APEX_LOCAL_HOST || 'localhost',
     defaultPort: 8080,
   },
+  inspector: {
+    portStart: Number(process.env.APEX_INSPECTOR_PORT_START) || 4040,
+    portEnd: Number(process.env.APEX_INSPECTOR_PORT_END) || 4060,
+    host: '127.0.0.1',
+  },
   app: {
     version: '2.0.1',
   },
