@@ -22,7 +22,7 @@ export const CONFIG = Object.freeze({
     secret: process.env.INTERNAL_SECRET,
   },
   app: {
-    version: '2.0.0',
+    version: '2.0.1',
   },
 });
 

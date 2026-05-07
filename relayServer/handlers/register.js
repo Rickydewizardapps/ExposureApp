@@ -27,11 +27,11 @@ export async function handleRegister(socket, msg, connectionManager, rateLimiter
     return { success: false };
   }
 
-  if (msg.version !== '2.0') {
+  if (msg.version !== '2.0.1') {
     safeWrite(socket, encodeJson({
       type: 'error',
       code: 'VERSION_MISMATCH',
-      message: 'Protocol version mismatch. Please update your client to v2.0.',
+      message: 'Protocol version mismatch. Please update your client to v2.0.1.',
     }));
     socket.end();
     return { success: false };

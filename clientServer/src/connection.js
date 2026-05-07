@@ -91,7 +91,7 @@ export class TunnelConnection {
       type: 'register',
       subdomain: this.subdomain,
       token: this.token,
-      version: '2.0',
+      version: '2.0.1',
     }));
   }
 

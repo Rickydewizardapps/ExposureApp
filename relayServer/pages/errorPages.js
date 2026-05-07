@@ -40,7 +40,7 @@ export const errorPage = (code, title, message) => `<!DOCTYPE html>
     <h2>${escapeHtml(title)}</h2>
     <p>${safeBold(message)}</p>
     <p><a href="/">Try Again</a></p>
-    <p class="footer">ApexTunnel v2.0 • BraveraTech</p>
+    <p class="footer">ApexTunnel v2.0.1 • BraveraTech</p>
   </div>
 </body>
 </html>`;

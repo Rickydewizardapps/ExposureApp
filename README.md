@@ -1,4 +1,10 @@
-# ApexTunnel v2.0
+<p align="center">
+  <img src="./assets/logo.svg" width="400" alt="ApexTunnel Logo">
+</p>
+
+<br>
+
+# ApexTunnel v2.0.1
 
 A self-hosted reverse tunnel. Expose any local server to the internet via a persistent TCP connection between a relay (VPS) and a client (your machine).
 
@@ -6,7 +12,7 @@ A self-hosted reverse tunnel. Expose any local server to the internet via a pers
 Browser → relay:443 ──── TCP ────→ client → localhost:8000
 ```
 
-## What's New in v2.0
+## What's New in v2.0.1
 
 - **Binary Framing Protocol** — replaces newline-delimited JSON with a robust binary frame format supporting streaming bodies without base64 encoding
 - **Streaming Bodies** — images, videos, audio, and large files are streamed directly without loading into memory
@@ -88,7 +94,7 @@ apex http 3000 --subdomain myapp
 ✔ Authtoken saved to ~/.apextunnel
 
 ┌─────────────────────────────────────────────────────────┐
-│  ApexTunnel v2.0.0                                      │
+│  ApexTunnel v2.0.1                                      │
 │  ─────────────────────────────────────────              │
 │  Account     you@example.com (Free)                     │
 │  Status      ● online                                   │

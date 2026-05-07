@@ -70,7 +70,9 @@ if (cmd === 'authtoken') {
     console.log(`${C.success}✔${C.reset} Authtoken saved successfully.`);
     process.exit(0);
   } catch (err) {
-    console.error(`${C.error}✖${C.reset} ${err.message}`);
+    // SECURITY FIX: Sanitize error messages to avoid leaking sensitive info
+    const errorMsg = sanitizeErrorMessage(err.message);
+    console.error(`${C.error}✖${C.reset} ${errorMsg}`);
     process.exit(1);
   }
 }
@@ -148,7 +150,9 @@ const tunnel = new TunnelConnection({
       return;
     }
     destroyUI();
-    console.error(`${C.error}✖${C.reset} ${String(err.message ?? 'Unknown server error')}`);
+    // SECURITY FIX: Sanitize error messages
+    const errorMsg = sanitizeErrorMessage(String(err.message ?? 'Unknown server error'));
+    console.error(`${C.error}✖${C.reset} ${errorMsg}`);
     process.exit(1);
   },
   onRequest: (msg) => {
@@ -190,6 +194,58 @@ const HOP_BY_HOP = new Set([
   'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade',
 ]);
 
+/**
+ * SECURITY FIX: Sanitize error messages to prevent leaking sensitive information
+ * Remove paths, internal server details, and other potentially sensitive info
+ */
+function sanitizeErrorMessage(msg) {
+  if (typeof msg !== 'string') return 'An error occurred';
+  
+  // Remove file paths (both Unix and Windows)
+  msg = msg.replace(/[\/\\][^\s]*/g, '[path]');
+  
+  // Remove IP addresses
+  msg = msg.replace(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/g, '[ip]');
+  
+  // Limit length to 200 chars to prevent log flooding
+  if (msg.length > 200) {
+    msg = msg.substring(0, 197) + '...';
+  }
+  
+  return msg;
+}
+
+/**
+ * SECURITY FIX: Validate and normalize URL path
+ * Prevents path traversal attacks like /../../../etc/passwd
+ */
+function normalizePath(urlPath) {
+  if (typeof urlPath !== 'string') return '/';
+  
+  // Must start with /
+  if (!urlPath.startsWith('/')) return '/';
+  
+  // Decode any percent-encoding to catch obfuscated traversal attempts
+  let decoded;
+  try {
+    decoded = decodeURIComponent(urlPath);
+  } catch {
+    // Invalid encoding - reject
+    return '/';
+  }
+  
+  // Split into segments and filter out . and ..
+  const segments = decoded.split('/').filter(s => s && s !== '.' && s !== '..');
+  
+  // Reject double-encoded traversal attempts
+  if (decoded.includes('%2e%2e') || decoded.includes('%2E%2E') || decoded.includes('..')) {
+    return '/';
+  }
+  
+  // Reconstruct safe path
+  return '/' + segments.join('/');
+}
+
 function send502(requestId, method, safePath, localReq) {
   try { localReq?.destroy(); } catch {}
   const html = getClientErrorPage(localPort);
@@ -212,15 +268,28 @@ function proxyRequest(msg) {
     earlyChunks: [],
     paused: false,
     responseStarted: false,
+    timedOut: false,  // Track if timeout already fired
   };
   activeRequests.set(msg.id, reqState);
 
-  const safePath = typeof msg.url === 'string' && msg.url.startsWith('/') ? msg.url : '/';
+  // SECURITY FIX: Properly normalize and validate URL path
+  const safePath = normalizePath(msg.url);
 
+  // SECURITY FIX: Better timeout handling with race condition prevention
   reqState.timeout = setTimeout(() => {
     if (!activeRequests.has(msg.id)) return;
+    
+    // Mark as timed out to prevent double-response
+    reqState.timedOut = true;
     activeRequests.delete(msg.id);
-    send502(msg.id, msg.method, safePath, reqState.localReq);
+    
+    // Only send 502 if response hasn't started yet
+    if (!reqState.responseStarted) {
+      send502(msg.id, msg.method, safePath, reqState.localReq);
+    } else {
+      // Response already started, just close the request
+      try { reqState.localReq?.destroy(); } catch {}
+    }
   }, 60000);
 
   const headers = {};
@@ -238,6 +307,12 @@ function proxyRequest(msg) {
     method: msg.method,
     headers,
   }, (localRes) => {
+    // Don't process if already timed out
+    if (reqState.timedOut) {
+      localRes.destroy();
+      return;
+    }
+    
     const noBodyStatus = [204, 304];
     const hasBody = !noBodyStatus.includes(localRes.statusCode) && msg.method !== 'HEAD';
 
@@ -257,6 +332,8 @@ function proxyRequest(msg) {
 
     localRes.on('data', (chunk) => tunnel.sendBodyChunk(msg.id, chunk));
     localRes.on('end', () => {
+      if (reqState.timedOut) return;
+      
       const duration = Math.round(performance.now() - startTime);
       tunnel.sendBodyEnd(msg.id);
       logRequest(msg.method, safePath, localRes.statusCode, duration, {
@@ -267,6 +344,8 @@ function proxyRequest(msg) {
       activeRequests.delete(msg.id);
     });
     localRes.on('error', (err) => {
+      if (reqState.timedOut) return;
+      
       console.error(`[PROXY] Response stream error: ${err.message}`);
       tunnel.sendBodyEnd(msg.id);
       logRequest(msg.method, safePath, 502, 0, {
@@ -292,6 +371,8 @@ function proxyRequest(msg) {
   if (reqState.bodyComplete) localReq.end();
 
   localReq.on('error', (err) => {
+    if (reqState.timedOut) return;
+    
     console.error(`[PROXY ERROR] ${msg.method} ${safePath} -> ${local.host}:${localPort}: ${err.message}`);
     clearTimeout(reqState.timeout);
     activeRequests.delete(msg.id);

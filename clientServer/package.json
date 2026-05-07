@@ -1,6 +1,6 @@
 {
   "name": "apex-client",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Local bridge for ApexTunnel, proxying local traffic to the public internet.",
   "keywords": [
     "tunnel",

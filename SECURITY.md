@@ -4,7 +4,7 @@
 
 Please report security issues to security@braveratech.com.
 
-## Known Issues Fixed in v2.0
+## Known Issues Fixed in v2.0.1
 
 ### 1. Leaked Environment Variables (CRITICAL)
 **File:** `relayServer/.env.save`  
