@@ -1,4 +1,5 @@
 import logger from '../logger.js';
+import semver from 'semver';
 import { validateSubdomain } from '../src/security.js';
 import { encodeJson } from '../src/protocol.js';
 import { CONFIG } from '../src/config.js';
@@ -26,12 +27,14 @@ export async function handleRegister(socket, msg, connectionManager, rateLimiter
     socket.end();
     return { success: false };
   }
-
-  if (msg.version !== '2.0.1') {
+  
+  const clientVer = String(msg.version || '');
+  
+  if (!semver.valid(clientVer) || !semver.satisfies(clientVer, '^2.0.0')) {
     safeWrite(socket, encodeJson({
       type: 'error',
       code: 'VERSION_MISMATCH',
-      message: 'Protocol version mismatch. Please update your client to v2.0.1.',
+      message: `Version ${clientVer} is not supported. Please use a client compatible with v2.x.x.`,
     }));
     socket.end();
     return { success: false };
