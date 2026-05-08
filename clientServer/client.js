@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import http from 'http';
+import { Readable } from 'node:stream';
 import { parseArgs } from 'util';
 import { C } from './src/colors.js';
 import { CONFIG, validateConfig } from './src/config.js';
@@ -9,10 +13,54 @@ import {
   logRequest, destroyUI, uiActive, setRestartCallback,
   getState, setInspectorPort,
 } from './src/cli.js';
-import { getStoredToken, saveToken, saveSubdomain } from './src/auth.js';
+import {
+  getStoredToken, saveToken, saveSubdomain,
+  setPassword, updatePassword, updateToken,
+  hasPassword, verifyPassword,
+} from './src/auth.js';
 import { getClientErrorPage } from './src/clientError.js';
 import { TunnelConnection } from './src/connection.js';
-import { startInspector, stopInspector } from './src/inspector.js';
+import { startInspector, stopInspector, logRequestToDb, storeBody } from './src/inspector.js';
+import { initDatabase } from './src/db/init.js';
+import { openDb } from './src/db/index.js';
+
+// ── MIGRATE OLD CONFIG ──
+const OLD_CONFIG_PATH = path.join(os.homedir(), '.apextunnel');
+
+async function migrateOldConfig() {
+  if (!fs.existsSync(OLD_CONFIG_PATH)) return;
+  
+  try {
+    const oldData = JSON.parse(fs.readFileSync(OLD_CONFIG_PATH, 'utf8'));
+    console.log(`${C.warning}○${C.reset} Found old .apextunnel config, migrating to encrypted DB...`);
+    
+    if (oldData.token && typeof oldData.token === 'string') {
+      await openDb(oldData.token);
+      await saveToken(oldData.token, true);
+      
+      if (oldData.subdomain) {
+        await saveSubdomain(oldData.subdomain);
+      }
+      
+      if (oldData.passwordHash && oldData.passwordSalt) {
+        console.log(`${C.warning}○${C.reset} Password needs reset: run 'apex pass <password>'`);
+      }
+    }
+    
+    fs.unlinkSync(OLD_CONFIG_PATH);
+    console.log(`${C.success}✔${C.reset} Migration complete. Old config removed.`);
+  } catch (err) {
+    console.warn(`${C.warning}○${C.reset} Failed to migrate old config: ${err.message}`);
+    console.log(`   ${C.dim}Delete ${OLD_CONFIG_PATH} manually if issues persist${C.reset}`);
+  }
+}
+
+// ── DATABASE INITIALIZATION ──
+const dbInitResult = await initDatabase();
+if (dbInitResult.error) {
+  console.error(`${C.error}✖${C.reset} Database initialization failed: ${dbInitResult.error}`);
+  process.exit(1);
+}
 
 try {
   validateConfig();
@@ -30,6 +78,9 @@ const HELP = `
    ${C.text}apex http <port>${C.reset}              ${C.dim}Expose a local port${C.reset}
    ${C.text}apex http <port> --subdomain <name>${C.reset}  ${C.dim}Expose with a custom subdomain${C.reset}
    ${C.text}apex authtoken <token>${C.reset}     ${C.dim}Save your auth token${C.reset}
+   ${C.text}apex new token <token>${C.reset}     ${C.dim}Update auth token${C.reset}
+   ${C.text}apex pass <password>${C.reset}       ${C.dim}Set dashboard password${C.reset}
+   ${C.text}apex new pass <password>${C.reset}   ${C.dim}Update dashboard password${C.reset}
    ${C.text}apex status${C.reset}                ${C.dim}Show saved token & relay info${C.reset}
    ${C.text}apex help${C.reset}                  ${C.dim}Show this message${C.reset}
 
@@ -37,6 +88,8 @@ const HELP = `
    ${C.dim}apex http 3000${C.reset}
    ${C.dim}apex http 3000 --subdomain myapp${C.reset}
    ${C.dim}apex authtoken eyJhbGciOiJIUzI1NiJ9...${C.reset}
+   ${C.dim}apex pass mysecret123${C.reset}
+   ${C.dim}apex new pass newsecret123${C.reset}
 
  ${C.brandBold}Env overrides:${C.reset}
    ${C.text}APEX_RELAY${C.reset}       ${C.dim}Relay hostname (default: relay.apextunnel.top)${C.reset}
@@ -66,19 +119,78 @@ if (cmd === 'authtoken') {
     process.exit(1);
   }
   try {
-    saveToken(rawToken);
+    await saveToken(rawToken);
     console.log(`${C.success}✔${C.reset} Authtoken saved successfully.`);
     process.exit(0);
   } catch (err) {
-    // SECURITY FIX: Sanitize error messages to avoid leaking sensitive info
     const errorMsg = sanitizeErrorMessage(err.message);
     console.error(`${C.error}✖${C.reset} ${errorMsg}`);
     process.exit(1);
   }
 }
 
+if (cmd === 'new') {
+  const subCmd = argv[1];
+  const value = argv[2];
+
+  if (subCmd === 'token') {
+    if (!value || !value.trim()) {
+      console.error(`${C.error}✖${C.reset} ${C.text}Usage:${C.reset} apex new token <token>`);
+      process.exit(1);
+    }
+    try {
+      await updateToken(value.trim());
+      console.log(`${C.success}✔${C.reset} Token updated successfully.`);
+      process.exit(0);
+    } catch (err) {
+      console.error(`${C.error}✖${C.reset} ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  if (subCmd === 'pass' || subCmd === 'password') {
+    if (!value || !value.trim()) {
+      console.error(`${C.error}✖${C.reset} ${C.text}Usage:${C.reset} apex new pass <password>`);
+      process.exit(1);
+    }
+    try {
+      await updatePassword(value.trim());
+      console.log(`${C.success}✔${C.reset} Password updated successfully.`);
+      process.exit(0);
+    } catch (err) {
+      console.error(`${C.error}✖${C.reset} ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  console.error(`${C.error}✖${C.reset} Unknown 'new' subcommand: "${subCmd}"`);
+  console.error(`   ${C.dim}Available: token, pass${C.reset}`);
+  process.exit(1);
+}
+
+if (cmd === 'pass' || cmd === 'password') {
+  const rawPass = argv[1];
+  if (!rawPass || !rawPass.trim()) {
+    console.error(`${C.error}✖${C.reset} ${C.text}Usage:${C.reset} apex pass <password>`);
+    process.exit(1);
+  }
+  try {
+    await setPassword(rawPass.trim());
+    console.log(`${C.success}✔${C.reset} Password set successfully.`);
+    process.exit(0);
+  } catch (err) {
+    if (err.message.includes('already set')) {
+      console.error(`${C.error}✖${C.reset} ${err.message}`);
+      console.error(`   ${C.dim}Run: apex new pass <password>${C.reset}`);
+    } else {
+      console.error(`${C.error}✖${C.reset} ${err.message}`);
+    }
+    process.exit(1);
+  }
+}
+
 if (cmd === 'status') {
-  const stored = getStoredToken();
+  const stored = await getStoredToken();
   if (!stored) {
     console.log(`${C.warning}○${C.reset} No auth token saved.`);
     console.log(`   ${C.dim}Run: apex authtoken <token>${C.reset}`);
@@ -86,6 +198,12 @@ if (cmd === 'status') {
     const masked = stored.slice(0, 8) + '••••••••' + stored.slice(-4);
     console.log(`${C.success}✔${C.reset} Token : ${C.text}${masked}${C.reset}`);
     console.log(`   ${C.dim}Relay : ${relay.host}:${relay.port} ${tls.enabled ? '(TLS)' : ''}${C.reset}`);
+  }
+  const passStatus = await hasPassword();
+  console.log(`   ${C.dim}Password: ${passStatus ? 'Set' : 'Not set'}${C.reset}`);
+  
+  if (dbInitResult.cleaned > 0) {
+    console.log(`   ${C.dim}DB cleanup: ${dbInitResult.cleaned} old rows removed${C.reset}`);
   }
   process.exit(0);
 }
@@ -95,6 +213,9 @@ if (cmd !== 'http') {
   console.error(`\n${C.brandBold}Available commands:${C.reset}`);
   console.error(`  ${C.text}http <port> [--subdomain <name>]${C.reset}`);
   console.error(`  ${C.text}authtoken <token>${C.reset}`);
+  console.error(`  ${C.text}new token <token>${C.reset}`);
+  console.error(`  ${C.text}pass <password>${C.reset}`);
+  console.error(`  ${C.text}new pass <password>${C.reset}`);
   console.error(`  ${C.text}status${C.reset}`);
   console.error(`  ${C.text}help${C.reset}`);
   process.exit(1);
@@ -117,7 +238,7 @@ if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) {
   process.exit(1);
 }
 
-const token = getStoredToken();
+const token = await getStoredToken();
 if (!token) {
   console.error(`${C.error}✖${C.reset} No auth token found. Run: apex authtoken <token>`);
   process.exit(1);
@@ -150,14 +271,13 @@ const tunnel = new TunnelConnection({
       return;
     }
     destroyUI();
-    // SECURITY FIX: Sanitize error messages
     const errorMsg = sanitizeErrorMessage(String(err.message ?? 'Unknown server error'));
     console.error(`${C.error}✖${C.reset} ${errorMsg}`);
     process.exit(1);
   },
-  onRequest: (msg) => {
+  onRequest: async (msg) => {
     if (msg.type === 'request') {
-      proxyRequest(msg);
+      await proxyRequest(msg);
     } else if (msg.type === 'bodyChunk') {
       const req = activeRequests.get(msg.id);
       if (req && !req.bodyComplete) {
@@ -166,6 +286,15 @@ const tunnel = new TunnelConnection({
           if (!writable) req.paused = true;
         } else {
           req.earlyChunks.push(msg.data);
+        }
+        // Capture request body for inspector
+        if (!req.reqBodyTruncated) {
+          req.reqBodySize += msg.data.length;
+          if (req.reqBodySize > 100 * 1024 * 1024) {
+            req.reqBodyTruncated = true;
+          } else {
+            req.reqBodyChunks.push(Buffer.from(msg.data));
+          }
         }
       }
     } else if (msg.type === 'bodyEnd') {
@@ -194,55 +323,34 @@ const HOP_BY_HOP = new Set([
   'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade',
 ]);
 
-/**
- * SECURITY FIX: Sanitize error messages to prevent leaking sensitive information
- * Remove paths, internal server details, and other potentially sensitive info
- */
 function sanitizeErrorMessage(msg) {
   if (typeof msg !== 'string') return 'An error occurred';
-  
-  // Remove file paths (both Unix and Windows)
   msg = msg.replace(/[\/\\][^\s]*/g, '[path]');
-  
-  // Remove IP addresses
   msg = msg.replace(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/g, '[ip]');
-  
-  // Limit length to 200 chars to prevent log flooding
   if (msg.length > 200) {
     msg = msg.substring(0, 197) + '...';
   }
-  
   return msg;
 }
 
-/**
- * SECURITY FIX: Validate and normalize URL path
- * Prevents path traversal attacks like /../../../etc/passwd
- */
 function normalizePath(urlPath) {
   if (typeof urlPath !== 'string') return '/';
-  
-  // Must start with /
   if (!urlPath.startsWith('/')) return '/';
-  
-  // Decode any percent-encoding to catch obfuscated traversal attempts
   let decoded;
   try {
     decoded = decodeURIComponent(urlPath);
   } catch {
-    // Invalid encoding - reject
     return '/';
   }
-  
-  // Split into segments and filter out . and ..
-  const segments = decoded.split('/').filter(s => s && s !== '.' && s !== '..');
-  
-  // Reject double-encoded traversal attempts
-  if (decoded.includes('%2e%2e') || decoded.includes('%2E%2E') || decoded.includes('..')) {
-    return '/';
+  const segments = [];
+  for (const segment of decoded.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
   }
-  
-  // Reconstruct safe path
   return '/' + segments.join('/');
 }
 
@@ -261,33 +369,78 @@ function send502(requestId, method, safePath, localReq) {
   });
 }
 
-function proxyRequest(msg) {
+async function finishLog(msg, safePath, status, duration, reqState) {
+  const logData = {
+    time: new Date().toISOString(),
+    method: msg.method,
+    url: safePath,
+    status,
+    duration,
+    reqHeaders: msg.headers,
+    resHeaders: {},
+    reqBodyPath: null,
+    resBodyPath: null,
+    reqBodySize: reqState.reqBodySize,
+    resBodySize: reqState.resBodySize,
+  };
+
+  if (reqState.reqBodyChunks.length > 0 && !reqState.reqBodyTruncated) {
+    const stream = new Readable();
+    stream.push(Buffer.concat(reqState.reqBodyChunks));
+    stream.push(null);
+    await new Promise(resolve => {
+      storeBody(stream, 100 * 1024 * 1024, (err, size, truncated, filePath) => {
+        if (!err && filePath) logData.reqBodyPath = filePath;
+        resolve();
+      });
+    });
+  }
+
+  if (reqState.resBodyChunks.length > 0 && !reqState.resBodyTruncated) {
+    const stream = new Readable();
+    stream.push(Buffer.concat(reqState.resBodyChunks));
+    stream.push(null);
+    await new Promise(resolve => {
+      storeBody(stream, 100 * 1024 * 1024, (err, size, truncated, filePath) => {
+        if (!err && filePath) logData.resBodyPath = filePath;
+        resolve();
+      });
+    });
+  }
+
+  logRequest(msg.method, safePath, status, duration, {
+    reqHeaders: msg.headers,
+    resHeaders: {},
+  });
+  await logRequestToDb(logData);
+}
+
+async function proxyRequest(msg) {
   const reqState = {
     bodyComplete: !msg.bodyExpected,
     localReq: null,
     earlyChunks: [],
     paused: false,
     responseStarted: false,
-    timedOut: false,  // Track if timeout already fired
+    timedOut: false,
+    reqBodyChunks: [],
+    reqBodySize: 0,
+    reqBodyTruncated: false,
+    resBodyChunks: [],
+    resBodySize: 0,
+    resBodyTruncated: false,
   };
   activeRequests.set(msg.id, reqState);
 
-  // SECURITY FIX: Properly normalize and validate URL path
   const safePath = normalizePath(msg.url);
 
-  // SECURITY FIX: Better timeout handling with race condition prevention
   reqState.timeout = setTimeout(() => {
     if (!activeRequests.has(msg.id)) return;
-    
-    // Mark as timed out to prevent double-response
     reqState.timedOut = true;
     activeRequests.delete(msg.id);
-    
-    // Only send 502 if response hasn't started yet
     if (!reqState.responseStarted) {
       send502(msg.id, msg.method, safePath, reqState.localReq);
     } else {
-      // Response already started, just close the request
       try { reqState.localReq?.destroy(); } catch {}
     }
   }, 60000);
@@ -307,12 +460,10 @@ function proxyRequest(msg) {
     method: msg.method,
     headers,
   }, (localRes) => {
-    // Don't process if already timed out
     if (reqState.timedOut) {
       localRes.destroy();
       return;
     }
-    
     const noBodyStatus = [204, 304];
     const hasBody = !noBodyStatus.includes(localRes.statusCode) && msg.method !== 'HEAD';
 
@@ -321,37 +472,38 @@ function proxyRequest(msg) {
 
     if (!hasBody) {
       const duration = Math.round(performance.now() - startTime);
-      logRequest(msg.method, safePath, localRes.statusCode, duration, {
-        reqHeaders: msg.headers,
-        resHeaders: localRes.headers,
-      });
+      finishLog(msg, safePath, localRes.statusCode, duration, reqState);
       clearTimeout(reqState.timeout);
       activeRequests.delete(msg.id);
       return;
     }
 
-    localRes.on('data', (chunk) => tunnel.sendBodyChunk(msg.id, chunk));
+    localRes.on('data', (chunk) => {
+      tunnel.sendBodyChunk(msg.id, chunk);
+      if (!reqState.resBodyTruncated) {
+        reqState.resBodySize += chunk.length;
+        if (reqState.resBodySize > 100 * 1024 * 1024) {
+          reqState.resBodyTruncated = true;
+        } else {
+          reqState.resBodyChunks.push(Buffer.from(chunk));
+        }
+      }
+    });
+
     localRes.on('end', () => {
       if (reqState.timedOut) return;
-      
       const duration = Math.round(performance.now() - startTime);
       tunnel.sendBodyEnd(msg.id);
-      logRequest(msg.method, safePath, localRes.statusCode, duration, {
-        reqHeaders: msg.headers,
-        resHeaders: localRes.headers,
-      });
+      finishLog(msg, safePath, localRes.statusCode, duration, reqState);
       clearTimeout(reqState.timeout);
       activeRequests.delete(msg.id);
     });
+
     localRes.on('error', (err) => {
       if (reqState.timedOut) return;
-      
       console.error(`[PROXY] Response stream error: ${err.message}`);
       tunnel.sendBodyEnd(msg.id);
-      logRequest(msg.method, safePath, 502, 0, {
-        reqHeaders: msg.headers,
-        resHeaders: {},
-      });
+      finishLog(msg, safePath, 502, 0, reqState);
       clearTimeout(reqState.timeout);
       activeRequests.delete(msg.id);
     });
@@ -372,11 +524,11 @@ function proxyRequest(msg) {
 
   localReq.on('error', (err) => {
     if (reqState.timedOut) return;
-    
     console.error(`[PROXY ERROR] ${msg.method} ${safePath} -> ${local.host}:${localPort}: ${err.message}`);
     clearTimeout(reqState.timeout);
     activeRequests.delete(msg.id);
     send502(msg.id, msg.method, safePath, localReq);
+    finishLog(msg, safePath, 502, 0, reqState);
   });
 }
 

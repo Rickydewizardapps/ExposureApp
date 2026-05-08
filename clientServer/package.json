@@ -47,6 +47,10 @@
     "pkg": "^5.8.1"
   },
   "dependencies": {
-    "blessed": "^0.1.81"
+    "@vscode/sqlite3": "5.1.12-vscode",
+    "better-sqlite3": "12.9.0",
+    "blessed": "^0.1.81",
+    "knex": "^3.2.10",
+    "sql.js": "^1.14.1"
   }
 }
