@@ -4,167 +4,220 @@ import os from 'os';
 const app = express();
 const PORT = 3000;
 
-let requestHistory = [];
-
-app.use(express.json());
-
-// Log middleware
-app.use((req, res, next) => {
-  if (!['/api/requests', '/favicon.ico'].includes(req.path) && !req.path.startsWith('/images')) {
-    requestHistory.unshift({
-      id: Date.now(),
-      time: new Date().toLocaleTimeString(),
-      method: req.method,
-      path: req.path,
-      host: req.headers.host
-    });
-    if (requestHistory.length > 5) requestHistory.pop();
-  }
-  next();
-});
-
-app.get('/api/requests', (req, res) => res.json(requestHistory));
-
+// Serve main HTML page
 app.get('/', (req, res) => {
   res.send(`
-    <!DOCTYPE html>
-    <html lang="en" class="scroll-smooth">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>ExposureApp | Production Test</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    </head>
-    <body class="bg-slate-50 text-slate-900 font-sans">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recipe Explorer | Food API Test</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+  <style>
+    .recipe-card {
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .recipe-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 20px 25px -12px rgba(0, 0, 0, 0.1);
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-orange-50 to-amber-50 text-gray-800 font-sans">
 
-        <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200">
-            <div class="max-w-6xl mx-auto px-6 py-4 flex justify-between items-center">
-                <span class="text-xl font-black tracking-tighter text-blue-600">EXPOSURE<span class="text-slate-900">APP</span></span>
-                <div class="hidden md:flex gap-8 text-sm font-medium text-slate-600">
-                    <a href="#about" class="hover:text-blue-600 transition">About</a>
-                    <a href="#gallery" class="hover:text-blue-600 transition">Gallery</a>
-                    <a href="#debugger" class="hover:text-blue-600 transition">Tunnel Debugger</a>
-                </div>
-                <div class="flex items-center gap-2 bg-green-100 px-3 py-1 rounded-full border border-green-200">
-                    <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                    <span class="text-[10px] font-bold text-green-700 uppercase">Tunnel Active</span>
-                </div>
-            </div>
-        </nav>
+  <!-- Navigation -->
+  <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-amber-200 shadow-sm">
+    <div class="max-w-6xl mx-auto px-6 py-4 flex justify-between items-center">
+      <span class="text-2xl font-black tracking-tighter text-amber-600">🍲 RECIPE<span class="text-gray-800">EXPLORER</span></span>
+      <div class="hidden md:flex gap-8 text-sm font-medium text-gray-600">
+        <a href="#about" class="hover:text-amber-600 transition">About</a>
+        <a href="#gallery" class="hover:text-amber-600 transition">Gallery</a>
+        <a href="#recipe-api" class="hover:text-amber-600 transition">Recipe API</a>
+      </div>
+      <div class="flex items-center gap-2 bg-amber-100 px-3 py-1 rounded-full border border-amber-300">
+        <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+        <span class="text-[10px] font-bold text-amber-800 uppercase">Live API Ready</span>
+      </div>
+    </div>
+  </nav>
 
-        <header class="relative py-20 px-6 bg-gradient-to-b from-white to-slate-50 overflow-hidden">
-            <div class="max-w-4xl mx-auto text-center relative z-10">
-                <h1 class="text-5xl md:text-7xl font-black text-slate-900 mb-6 tracking-tight">
-                    Testing the <span class="text-blue-600">Future</span> of Tunnels.
-                </h1>
-                <p class="text-lg text-slate-600 mb-10 max-w-2xl mx-auto">
-                    This is a complete landing page test. If you see this, your relay is successfully handling multi-part HTML, CSS injection, and font-awesome assets.
-                </p>
-                <div class="flex flex-col md:flex-row justify-center gap-4">
-                    <button onclick="pingApi()" class="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-full font-bold shadow-lg shadow-blue-500/30 transition-all active:scale-95">
-                        <i class="fas fa-bolt mr-2"></i> Trigger API Call
-                    </button>
-                    <a href="#debugger" class="bg-white border border-slate-200 px-8 py-4 rounded-full font-bold hover:bg-slate-50 transition">View Logs</a>
-                </div>
-                <div id="api-result" class="mt-6 p-4 bg-slate-900 rounded-2xl text-cyan-400 font-mono text-xs hidden max-w-sm mx-auto overflow-hidden"></div>
-            </div>
-        </header>
+  <!-- Hero Section -->
+  <header class="relative py-24 px-6 text-center overflow-hidden">
+    <div class="max-w-4xl mx-auto relative z-10">
+      <h1 class="text-5xl md:text-7xl font-black text-gray-900 mb-6 tracking-tight">
+        Discover <span class="text-amber-600">Delicious</span> Recipes
+      </h1>
+      <p class="text-lg text-gray-600 mb-10 max-w-2xl mx-auto">
+        Powered by TheMealDB – test your API integration with random global dishes.  
+        Click the button below and see real recipe data rendered beautifully.
+      </p>
+      <div class="flex flex-col md:flex-row justify-center gap-4">
+        <button id="getRecipeBtn" class="bg-amber-600 hover:bg-amber-700 text-white px-8 py-4 rounded-full font-bold shadow-lg shadow-amber-500/30 transition-all active:scale-95">
+          <i class="fas fa-utensils mr-2"></i> Get Random Recipe
+        </button>
+      </div>
+    </div>
+  </header>
 
-        <section id="about" class="py-20 px-6 max-w-6xl mx-auto">
-            <div class="grid md:grid-cols-2 gap-12 items-center">
-                <div class="bg-blue-600 rounded-3xl p-10 text-white shadow-2xl">
-                    <h2 class="text-3xl font-bold mb-4">Relay Performance</h2>
-                    <p class="opacity-90 mb-6 leading-relaxed">
-                        Running on <b>${os.platform()}</b> (${os.arch()}). This section tests the relay's ability to serve static text content and nested div structures efficiently.
-                    </p>
-                    <div class="space-y-4">
-                        <div class="flex justify-between border-b border-white/20 pb-2">
-                            <span>Memory Usage</span>
-                            <span class="font-mono">${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB</span>
-                        </div>
-                        <div class="flex justify-between border-b border-white/20 pb-2">
-                            <span>Uptime</span>
-                            <span class="font-mono">${Math.floor(process.uptime())}s</span>
-                        </div>
-                    </div>
+  <!-- About Section -->
+  <section id="about" class="py-20 px-6 max-w-6xl mx-auto">
+    <div class="grid md:grid-cols-2 gap-12 items-center">
+      <div class="bg-amber-600 rounded-3xl p-10 text-white shadow-2xl">
+        <h2 class="text-3xl font-bold mb-4">Why This Test?</h2>
+        <p class="opacity-90 mb-6 leading-relaxed">
+          This app serves as a frontend playground for testing external API calls, rendering dynamic JSON data, and building responsive UI components.
+        </p>
+        <div class="space-y-4">
+          <div class="flex justify-between border-b border-white/20 pb-2">
+            <span>Environment</span>
+            <span class="font-mono">${os.platform()} (${os.arch()})</span>
+          </div>
+          <div class="flex justify-between border-b border-white/20 pb-2">
+            <span>Node Version</span>
+            <span class="font-mono">${process.version}</span>
+          </div>
+          <div class="flex justify-between border-b border-white/20 pb-2">
+            <span>Memory Usage</span>
+            <span class="font-mono">${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB</span>
+          </div>
+        </div>
+      </div>
+      <div>
+        <h3 class="text-2xl font-bold mb-4 italic text-amber-600">"Good food is the foundation of genuine happiness."</h3>
+        <p class="text-gray-600">Every click fetches a real recipe from an open API – testing your network, JSON parsing, and dynamic rendering skills.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Gallery Section (Food images) -->
+  <section id="gallery" class="py-20 px-6 bg-gray-900 text-white">
+    <div class="max-w-6xl mx-auto">
+      <h2 class="text-3xl font-bold mb-10 text-center">🍽️ Visual Inspiration</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+        <img src="https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=400&h=400&fit=crop" class="rounded-xl hover:scale-105 transition duration-500 shadow-xl" alt="Burger">
+        <img src="https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400&h=400&fit=crop" class="rounded-xl hover:scale-105 transition duration-500 shadow-xl" alt="Salad">
+        <img src="https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=400&h=400&fit=crop" class="rounded-xl hover:scale-105 transition duration-500 shadow-xl" alt="Pizza">
+        <img src="https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&h=400&fit=crop" class="rounded-xl hover:scale-105 transition duration-500 shadow-xl" alt="Sushi">
+      </div>
+    </div>
+  </section>
+
+  <!-- Recipe API Section -->
+  <section id="recipe-api" class="py-20 px-6 max-w-4xl mx-auto">
+    <div class="text-center mb-12">
+      <h2 class="text-4xl font-bold text-gray-800 mb-4">🍳 Live Recipe API</h2>
+      <p class="text-gray-600">Click the button – a random meal appears with ingredients and instructions.</p>
+    </div>
+
+    <div id="recipeResult" class="hidden">
+      <!-- Dynamic recipe card will be inserted here -->
+    </div>
+
+    <div id="loadingSpinner" class="hidden text-center py-12">
+      <i class="fas fa-spinner fa-spin text-4xl text-amber-600"></i>
+      <p class="mt-4 text-gray-500">Fetching a tasty recipe...</p>
+    </div>
+
+    <div id="errorMessage" class="hidden bg-red-100 border border-red-400 text-red-700 px-6 py-4 rounded-xl text-center">
+      <i class="fas fa-exclamation-triangle mr-2"></i> Oops! Could not fetch recipe. Please try again.
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="py-10 border-t border-amber-200 text-center text-gray-500 text-sm bg-white/50">
+    <p>🍴 Recipe Explorer | Powered by TheMealDB.com</p>
+    <p class="mt-2 font-mono text-[10px]">Test App – API Integration Demo | Node.js + Express</p>
+  </footer>
+
+  <script>
+    const getRecipeBtn = document.getElementById('getRecipeBtn');
+    const recipeResult = document.getElementById('recipeResult');
+    const loadingSpinner = document.getElementById('loadingSpinner');
+    const errorMessage = document.getElementById('errorMessage');
+
+    // Helper to format ingredients list from TheMealDB response
+    function formatIngredients(meal) {
+      let ingredients = [];
+      for (let i = 1; i <= 20; i++) {
+        const ingredient = meal[\`strIngredient\${i}\`];
+        const measure = meal[\`strMeasure\${i}\`];
+        if (ingredient && ingredient.trim() !== "") {
+          ingredients.push(\`<li class="flex items-start gap-2"><span class="text-amber-600 font-bold">•</span> <span>\${measure ? measure : ''} \${ingredient}</span></li>\`);
+        }
+      }
+      return ingredients.join('');
+    }
+
+    async function fetchRandomRecipe() {
+      // Reset UI
+      recipeResult.classList.add('hidden');
+      errorMessage.classList.add('hidden');
+      loadingSpinner.classList.remove('hidden');
+      getRecipeBtn.disabled = true;
+      getRecipeBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Loading...';
+
+      try {
+        const response = await fetch('https://www.themealdb.com/api/json/v1/1/random.php');
+        if (!response.ok) throw new Error('Network error');
+        const data = await response.json();
+        const meal = data.meals[0];
+
+        if (!meal) throw new Error('No recipe found');
+
+        // Build the recipe card
+        const ingredientsList = formatIngredients(meal);
+
+        const recipeHTML = \`
+          <div class="recipe-card bg-white rounded-3xl shadow-xl overflow-hidden border border-amber-100">
+            <div class="md:flex">
+              <div class="md:w-1/2">
+                <img src="\${meal.strMealThumb}" alt="\${meal.strMeal}" class="w-full h-full object-cover">
+              </div>
+              <div class="p-6 md:w-1/2">
+                <h3 class="text-3xl font-bold text-gray-800 mb-2">\${meal.strMeal}</h3>
+                <p class="text-amber-600 mb-4"><i class="fas fa-globe mr-2"></i> \${meal.strArea || 'International'} Cuisine</p>
+                <div class="mb-4">
+                  <h4 class="text-xl font-semibold mb-2">🛒 Ingredients</h4>
+                  <ul class="space-y-1 text-gray-700 text-sm">\${ingredientsList}</ul>
                 </div>
                 <div>
-                    <h3 class="text-2xl font-bold mb-4 italic text-slate-400">"The best way to predict the future is to tunnel it."</h3>
-                    <p class="text-slate-600">Your relay server is currently managing the protocol handshake, frame encoding, and the WebSocket upgrade required to render this page.</p>
+                  <h4 class="text-xl font-semibold mb-2">📖 Instructions</h4>
+                  <p class="text-gray-600 text-sm leading-relaxed max-h-40 overflow-y-auto pr-2">\${meal.strInstructions.substring(0, 500)}...</p>
                 </div>
-            </div>
-        </section>
-
-        <section id="gallery" class="py-20 px-6 bg-slate-900 text-white">
-            <div class="max-w-6xl mx-auto">
-                <h2 class="text-3xl font-bold mb-10">Tunnel Stress Test: Gallery</h2>
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <img src="https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=400&h=400&fit=crop" class="rounded-xl hover:scale-105 transition duration-500 shadow-xl" alt="Test 1">
-                    <img src="https://images.unsplash.com/photo-1518770660439-4636190af475?w=400&h=400&fit=crop" class="rounded-xl hover:scale-105 transition duration-500 shadow-xl" alt="Test 2">
-                    <img src="https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=400&h=400&fit=crop" class="rounded-xl hover:scale-105 transition duration-500 shadow-xl" alt="Test 3">
-                    <img src="https://imgs.search.brave.com/TKemYQjFprc_9GZC_ODE0ml3kr7pA6A1uEPgyqjQMFw/rs:fit:500:0:1:0/g:ce/aHR0cHM6Ly9pbWFn/ZXMucGV4ZWxzLmNv/bS9waG90b3MvMzU0/MTUzMzUvcGV4ZWxz/LXBob3RvLTM1NDE1/MzM1L2ZyZWUtcGhv/dG8tb2YtY3VydmVk/LXR1bm5lbC13aXRo/LWFyY2hpdGVjdHVy/YWwtbGlnaHRpbmct/aW4tdGFpd2FuLmpw/ZWc_YXV0bz1jb21w/cmVzcyZjcz10aW55/c3JnYiZkcHI9MSZ3/PTUwMA" class="rounded-xl hover:scale-105 transition duration-500 shadow-xl" alt="Test 4">
+                <div class="mt-4 pt-3 border-t border-gray-100">
+                  <a href="\${meal.strSource}" target="_blank" class="text-amber-600 hover:underline text-sm"><i class="fas fa-external-link-alt mr-1"></i> View original recipe</a>
                 </div>
+              </div>
             </div>
-        </section>
+          </div>
+        \`;
 
-        <section id="debugger" class="py-20 px-6 max-w-xl mx-auto">
-            <div class="bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden">
-                <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                    <h3 class="font-bold uppercase tracking-widest text-xs text-slate-500">Traffic Debugger</h3>
-                    <span id="last-update" class="text-[10px] font-mono text-blue-600"></span>
-                </div>
-                <div id="log-container" class="divide-y divide-slate-100">
-                    </div>
-            </div>
-        </section>
+        recipeResult.innerHTML = recipeHTML;
+        recipeResult.classList.remove('hidden');
+      } catch (err) {
+        console.error(err);
+        errorMessage.classList.remove('hidden');
+      } finally {
+        loadingSpinner.classList.add('hidden');
+        getRecipeBtn.disabled = false;
+        getRecipeBtn.innerHTML = '<i class="fas fa-utensils mr-2"></i> Get Random Recipe';
+      }
+    }
 
-        <footer class="py-10 border-t border-slate-200 text-center text-slate-400 text-sm">
-            <p>&copy; 2026 ExposureApp Tunnel Testing Suite</p>
-            <p class="mt-2 font-mono text-[10px]">Client Version: 2.0.1 | Relay: ^2.0.0</p>
-        </footer>
-
-        <script>
-            async function pingApi() {
-                const el = document.getElementById('api-result');
-                el.classList.remove('hidden');
-                el.innerText = 'Connecting to tunnel...';
-                try {
-                    const res = await fetch('/api/test');
-                    const data = await res.json();
-                    el.innerText = JSON.stringify(data, null, 2);
-                } catch (e) { el.innerText = 'Error: ' + e.message; }
-            }
-
-            async function updateLogs() {
-                try {
-                    const res = await fetch('/api/requests');
-                    const logs = await res.json();
-                    const container = document.getElementById('log-container');
-                    document.getElementById('last-update').innerText = 'SYNCED: ' + new Date().toLocaleTimeString();
-                    
-                    container.innerHTML = logs.map(log => \`
-                        <div class="p-4 flex justify-between items-center">
-                            <div class="flex flex-col">
-                                <span class="text-[10px] font-bold text-slate-400">\${log.time}</span>
-                                <span class="text-sm font-mono font-bold text-slate-800 uppercase">\${log.method} \${log.path}</span>
-                            </div>
-                            <span class="text-[10px] font-mono bg-slate-100 px-2 py-1 rounded text-slate-500 max-w-[100px] truncate">\${log.host}</span>
-                        </div>
-                    \`).join('') || '<div class="p-10 text-center italic text-slate-400">Waiting for traffic...</div>';
-                } catch (e) {}
-            }
-
-            setInterval(updateLogs, 3000);
-            updateLogs();
-        </script>
-    </body>
-    </html>
+    getRecipeBtn.addEventListener('click', fetchRandomRecipe);
+  </script>
+</body>
+</html>
   `);
 });
 
-app.get('/api/test', (req, res) => {
-  res.json({ status: "success", version: "2.0.1", node: process.version, engine: "ExposureApp-Relay" });
+// Optional: simple API endpoint to test server status
+app.get('/api/status', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
 });
 
-app.listen(PORT, () => console.log(`🚀 Extreme Test App: http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🍕 Recipe Explorer running at http://localhost:${PORT}`);
+});

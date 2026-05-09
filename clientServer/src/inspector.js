@@ -971,7 +971,7 @@ function renderDashboard(state) {
       border: 1px solid #222;
     }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    thead { position: sticky; top: 60px; z-index: 10; }
+    thead { position: sticky; top: 0px; z-index: 10; width: 100%; }
     th {
       text-align: left;
       padding: 10px 12px;

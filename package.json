@@ -3,6 +3,7 @@
   "version": "2.0.1",
   "description": "Self-hosted reverse tunnel with streaming, TLS, and rate limiting",
   "private": true,
+  "type": "module",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
