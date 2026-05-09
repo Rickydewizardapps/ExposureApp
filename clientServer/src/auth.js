@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual, scryptSync } from 'crypto';
-import { openDb, openPlainDb, getDb, persistDb, closeDb } from './db/index.js';
+import { openDb, getDb, persistDb } from './db/index.js';
+import { getEncryptedConfig, setEncryptedConfig, deleteEncryptedConfig } from './db/index.js';
 
 const MIN_TOKEN_LEN = 64;
 const MIN_PASS_LEN = 8;
@@ -28,32 +29,6 @@ function validateTokenFormat(token) {
     return { valid: true, type: 'api_key' };
   }
   return { valid: false, reason: 'Token contains invalid characters' };
-}
-
-function sqlEscape(str) {
-  return String(str).replace(/'/g, "''");
-}
-
-async function getConfigValue(key) {
-  const db = getDb();
-  const result = db._db.exec(`SELECT value FROM config WHERE key = '${sqlEscape(key)}'`);
-  if (!result.length || !result[0].values.length) return null;
-  return result[0].values[0][0];
-}
-
-async function setConfigValue(key, value) {
-  const db = getDb();
-  const existing = db._db.exec(`SELECT 1 FROM config WHERE key = '${sqlEscape(key)}'`);
-  if (existing.length && existing[0].values.length) {
-    db._db.exec(`UPDATE config SET value = '${sqlEscape(value)}' WHERE key = '${sqlEscape(key)}'`);
-  } else {
-    db._db.exec(`INSERT INTO config (key, value) VALUES ('${sqlEscape(key)}', '${sqlEscape(value)}')`);
-  }
-}
-
-async function deleteConfigValue(key) {
-  const db = getDb();
-  db._db.exec(`DELETE FROM config WHERE key = '${sqlEscape(key)}'`);
 }
 
 const loginAttempts = new Map();
@@ -93,6 +68,8 @@ function clearRateLimit(identifier) {
   loginAttempts.delete(identifier);
 }
 
+// ── Token Operations ──
+
 export async function saveToken(token, force = false) {
   if (!token || typeof token !== 'string') {
     throw new Error('Invalid token.');
@@ -117,7 +94,7 @@ export async function saveToken(token, force = false) {
     throw new Error('Token already saved. Run: apex new token <token> to update.');
   }
 
-  await setConfigValue('token', trimmed);
+  await setEncryptedConfig('token', trimmed);
   await persistDb();
 }
 
@@ -139,18 +116,28 @@ export async function updateToken(newToken) {
     throw new Error('No token saved. Run: apex authtoken <token> to set one.');
   }
 
-  await setConfigValue('token', trimmed);
+  await setEncryptedConfig('token', trimmed);
   await persistDb();
 }
 
+/**
+ * Get the stored auth token.
+ * Returns null if not found.
+ * Throws DECRYPTION_FAILED if hardware changed — caller MUST catch
+ * and prompt user to re-run "apex authtoken <token>".
+ */
 export async function getStoredToken() {
   try {
-    return await getConfigValue('token');
+    return await getEncryptedConfig('token');
   } catch (err) {
     if (err.message.includes('not initialized')) return null;
+    // Propagate DECRYPTION_FAILED so caller can show re-sync message
+    if (err.message.includes('DECRYPTION_FAILED')) throw err;
     throw err;
   }
 }
+
+// ── Password Operations ──
 
 export async function setPassword(password, force = false) {
   if (!password || typeof password !== 'string') {
@@ -166,7 +153,7 @@ export async function setPassword(password, force = false) {
     await openDb();
   }
 
-  const existingHash = await getConfigValue('passwordHash');
+  const existingHash = await getEncryptedConfig('passwordHash');
   if (existingHash && !force) {
     throw new Error('Password already set. Run: apex new pass <password> to update.');
   }
@@ -174,8 +161,8 @@ export async function setPassword(password, force = false) {
   const salt = generateSalt();
   const hash = hashPassword(password, salt);
 
-  await setConfigValue('passwordHash', hash);
-  await setConfigValue('passwordSalt', salt);
+  await setEncryptedConfig('passwordHash', hash);
+  await setEncryptedConfig('passwordSalt', salt);
   await persistDb();
 }
 
@@ -193,8 +180,8 @@ export async function updatePassword(newPassword) {
     await openDb();
   }
 
-  const existingHash = await getConfigValue('passwordHash');
-  const salt = await getConfigValue('passwordSalt');
+  const existingHash = await getEncryptedConfig('passwordHash');
+  const salt = await getEncryptedConfig('passwordSalt');
   if (!existingHash || !salt) {
     throw new Error('No password set. Run: apex pass <password> to set one.');
   }
@@ -202,8 +189,8 @@ export async function updatePassword(newPassword) {
   const newSalt = generateSalt();
   const newHash = hashPassword(newPassword, newSalt);
 
-  await setConfigValue('passwordHash', newHash);
-  await setConfigValue('passwordSalt', newSalt);
+  await setEncryptedConfig('passwordHash', newHash);
+  await setEncryptedConfig('passwordSalt', newSalt);
   await persistDb();
 }
 
@@ -219,8 +206,8 @@ export async function verifyPassword(password, identifier = 'default') {
     return { valid: false, rateLimited: true, waitSeconds: limit.waitSeconds };
   }
 
-  const storedHash = await getConfigValue('passwordHash');
-  const salt = await getConfigValue('passwordSalt');
+  const storedHash = await getEncryptedConfig('passwordHash');
+  const salt = await getEncryptedConfig('passwordSalt');
   if (!storedHash || !salt) {
     return { valid: false, rateLimited: false, waitSeconds: 0 };
   }
@@ -237,8 +224,8 @@ export async function verifyPassword(password, identifier = 'default') {
 
 export async function hasPassword() {
   try {
-    const hash = await getConfigValue('passwordHash');
-    const salt = await getConfigValue('passwordSalt');
+    const hash = await getEncryptedConfig('passwordHash');
+    const salt = await getEncryptedConfig('passwordSalt');
     return !!(hash && salt);
   } catch {
     return false;
@@ -246,25 +233,27 @@ export async function hasPassword() {
 }
 
 export async function clearPassword() {
-  await deleteConfigValue('passwordHash');
-  await deleteConfigValue('passwordSalt');
+  await deleteEncryptedConfig('passwordHash');
+  await deleteEncryptedConfig('passwordSalt');
   await persistDb();
 }
+
+// ── Subdomain Operations ──
 
 export async function saveSubdomain(subdomain) {
   if (typeof subdomain !== 'string') return;
   const trimmed = subdomain.trim();
   if (trimmed) {
-    await setConfigValue('subdomain', trimmed);
+    await setEncryptedConfig('subdomain', trimmed);
   } else {
-    await deleteConfigValue('subdomain');
+    await deleteEncryptedConfig('subdomain');
   }
   await persistDb();
 }
 
 export async function getStoredSubdomain() {
   try {
-    return await getConfigValue('subdomain');
+    return await getEncryptedConfig('subdomain');
   } catch {
     return null;
   }

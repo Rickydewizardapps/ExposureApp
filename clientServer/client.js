@@ -29,24 +29,24 @@ const OLD_CONFIG_PATH = path.join(os.homedir(), '.apextunnel');
 
 async function migrateOldConfig() {
   if (!fs.existsSync(OLD_CONFIG_PATH)) return;
-  
+
   try {
     const oldData = JSON.parse(fs.readFileSync(OLD_CONFIG_PATH, 'utf8'));
     console.log(`${C.warning}○${C.reset} Found old .apextunnel config, migrating to encrypted DB...`);
-    
+
     if (oldData.token && typeof oldData.token === 'string') {
-      await openDb(oldData.token);
+      await openDb();
       await saveToken(oldData.token, true);
-      
+
       if (oldData.subdomain) {
         await saveSubdomain(oldData.subdomain);
       }
-      
+
       if (oldData.passwordHash && oldData.passwordSalt) {
         console.log(`${C.warning}○${C.reset} Password needs reset: run 'apex pass <password>'`);
       }
     }
-    
+
     fs.unlinkSync(OLD_CONFIG_PATH);
     console.log(`${C.success}✔${C.reset} Migration complete. Old config removed.`);
   } catch (err) {
@@ -131,7 +131,7 @@ if (cmd === 'authtoken') {
 
 if (cmd === 'new') {
   const subCmd = argv[1];
-  const value = argv[2];
+  const value  = argv[2];
 
   if (subCmd === 'token') {
     if (!value || !value.trim()) {
@@ -190,8 +190,21 @@ if (cmd === 'pass' || cmd === 'password') {
 }
 
 if (cmd === 'status') {
-  const stored = await getStoredToken();
-  if (!stored) {
+  let stored = null;
+  let decryptionError = false;
+  try {
+    stored = await getStoredToken();
+  } catch (err) {
+    if (err.message.includes('DECRYPTION_FAILED')) {
+      decryptionError = true;
+    }
+  }
+
+  if (decryptionError) {
+    console.log(`${C.warning}○${C.reset} Encrypted token cannot be decrypted.`);
+    console.log(`   ${C.dim}This usually means the database was moved to a different device.${C.reset}`);
+    console.log(`   ${C.dim}Run: apex authtoken <token> to re-sync.${C.reset}`);
+  } else if (!stored) {
     console.log(`${C.warning}○${C.reset} No auth token saved.`);
     console.log(`   ${C.dim}Run: apex authtoken <token>${C.reset}`);
   } else {
@@ -199,11 +212,15 @@ if (cmd === 'status') {
     console.log(`${C.success}✔${C.reset} Token : ${C.text}${masked}${C.reset}`);
     console.log(`   ${C.dim}Relay : ${relay.host}:${relay.port} ${tls.enabled ? '(TLS)' : ''}${C.reset}`);
   }
+
   const passStatus = await hasPassword();
   console.log(`   ${C.dim}Password: ${passStatus ? 'Set' : 'Not set'}${C.reset}`);
-  
+
   if (dbInitResult.cleaned > 0) {
     console.log(`   ${C.dim}DB cleanup: ${dbInitResult.cleaned} old rows removed${C.reset}`);
+  }
+  if (dbInitResult.migrated > 0) {
+    console.log(`   ${C.dim}Crypto migration: ${dbInitResult.migrated} value(s) encrypted${C.reset}`);
   }
   process.exit(0);
 }
@@ -230,7 +247,7 @@ const { values, positionals } = parseArgs({
   strict: true,
 });
 
-const rawPort = positionals[0] ?? String(local.defaultPort);
+const rawPort  = positionals[0] ?? String(local.defaultPort);
 const localPort = Number(rawPort);
 
 if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) {
@@ -238,7 +255,20 @@ if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) {
   process.exit(1);
 }
 
-const token = await getStoredToken();
+// ── Handle decryption failure with clear re-sync message ──
+let token;
+try {
+  token = await getStoredToken();
+} catch (err) {
+  if (err.message.includes('DECRYPTION_FAILED')) {
+    console.error(`${C.error}✖${C.reset} Cannot decrypt stored token.`);
+    console.error(`   ${C.dim}The database was likely encrypted on a different device.${C.reset}`);
+    console.error(`   ${C.dim}Run: apex authtoken <token> to re-sync to this machine.${C.reset}`);
+    process.exit(1);
+  }
+  throw err;
+}
+
 if (!token) {
   console.error(`${C.error}✖${C.reset} No auth token found. Run: apex authtoken <token>`);
   process.exit(1);
@@ -287,7 +317,6 @@ const tunnel = new TunnelConnection({
         } else {
           req.earlyChunks.push(msg.data);
         }
-        // Capture request body for inspector
         if (!req.reqBodyTruncated) {
           req.reqBodySize += msg.data.length;
           if (req.reqBodySize > 100 * 1024 * 1024) {
@@ -327,9 +356,7 @@ function sanitizeErrorMessage(msg) {
   if (typeof msg !== 'string') return 'An error occurred';
   msg = msg.replace(/[\/\\][^\s]*/g, '[path]');
   msg = msg.replace(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/g, '[ip]');
-  if (msg.length > 200) {
-    msg = msg.substring(0, 197) + '...';
-  }
+  if (msg.length > 200) msg = msg.substring(0, 197) + '...';
   return msg;
 }
 
@@ -345,10 +372,7 @@ function normalizePath(urlPath) {
   const segments = [];
   for (const segment of decoded.split('/')) {
     if (segment === '' || segment === '.') continue;
-    if (segment === '..') {
-      segments.pop();
-      continue;
-    }
+    if (segment === '..') { segments.pop(); continue; }
     segments.push(segment);
   }
   return '/' + segments.join('/');
@@ -371,13 +395,13 @@ function send502(requestId, method, safePath, localReq) {
 
 async function finishLog(msg, safePath, status, duration, reqState) {
   const logData = {
-    time: new Date().toISOString(),
-    method: msg.method,
-    url: safePath,
+    time:        new Date().toISOString(),
+    method:      msg.method,
+    url:         safePath,
     status,
     duration,
-    reqHeaders: msg.headers,
-    resHeaders: {},
+    reqHeaders:  msg.headers,
+    resHeaders:  reqState.resHeaders || {},
     reqBodyPath: null,
     resBodyPath: null,
     reqBodySize: reqState.reqBodySize,
@@ -389,7 +413,7 @@ async function finishLog(msg, safePath, status, duration, reqState) {
     stream.push(Buffer.concat(reqState.reqBodyChunks));
     stream.push(null);
     await new Promise(resolve => {
-      storeBody(stream, 100 * 1024 * 1024, (err, size, truncated, filePath) => {
+      storeBody(stream, 100 * 1024 * 1024, (err, _size, _truncated, filePath) => {
         if (!err && filePath) logData.reqBodyPath = filePath;
         resolve();
       });
@@ -401,7 +425,7 @@ async function finishLog(msg, safePath, status, duration, reqState) {
     stream.push(Buffer.concat(reqState.resBodyChunks));
     stream.push(null);
     await new Promise(resolve => {
-      storeBody(stream, 100 * 1024 * 1024, (err, size, truncated, filePath) => {
+      storeBody(stream, 100 * 1024 * 1024, (err, _size, _truncated, filePath) => {
         if (!err && filePath) logData.resBodyPath = filePath;
         resolve();
       });
@@ -410,25 +434,26 @@ async function finishLog(msg, safePath, status, duration, reqState) {
 
   logRequest(msg.method, safePath, status, duration, {
     reqHeaders: msg.headers,
-    resHeaders: {},
+    resHeaders: reqState.resHeaders || {},
   });
   await logRequestToDb(logData);
 }
 
 async function proxyRequest(msg) {
   const reqState = {
-    bodyComplete: !msg.bodyExpected,
-    localReq: null,
-    earlyChunks: [],
-    paused: false,
-    responseStarted: false,
-    timedOut: false,
-    reqBodyChunks: [],
-    reqBodySize: 0,
-    reqBodyTruncated: false,
-    resBodyChunks: [],
-    resBodySize: 0,
-    resBodyTruncated: false,
+    bodyComplete:      !msg.bodyExpected,
+    localReq:          null,
+    earlyChunks:       [],
+    paused:            false,
+    responseStarted:   false,
+    timedOut:          false,
+    reqBodyChunks:     [],
+    reqBodySize:       0,
+    reqBodyTruncated:  false,
+    resBodyChunks:     [],
+    resBodySize:       0,
+    resBodyTruncated:  false,
+    resHeaders:        {},
   };
   activeRequests.set(msg.id, reqState);
 
@@ -455,18 +480,17 @@ async function proxyRequest(msg) {
 
   const localReq = http.request({
     hostname: local.host,
-    port: localPort,
-    path: safePath,
-    method: msg.method,
+    port:     localPort,
+    path:     safePath,
+    method:   msg.method,
     headers,
   }, (localRes) => {
-    if (reqState.timedOut) {
-      localRes.destroy();
-      return;
-    }
+    if (reqState.timedOut) { localRes.destroy(); return; }
+
     const noBodyStatus = [204, 304];
     const hasBody = !noBodyStatus.includes(localRes.statusCode) && msg.method !== 'HEAD';
 
+    reqState.resHeaders = localRes.headers;
     tunnel.sendResponseStart(msg.id, localRes.statusCode, localRes.headers, hasBody);
     reqState.responseStarted = true;
 
@@ -539,5 +563,5 @@ const gracefulExit = () => {
   process.exit(0);
 };
 
-process.on('SIGINT', gracefulExit);
+process.on('SIGINT',  gracefulExit);
 process.on('SIGTERM', gracefulExit);
